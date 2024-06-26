@@ -98,7 +98,7 @@ class TgUploader:
         LEECH_X = int(dumpid) if len(dumpid) != 0 else user_data.get('is_log_leech', [''])[0]
 
         BOT_PM_X = get_bot_pm(user_id_)
-        
+
         notMedia = False
         thumb = self.__thumb
         self.__is_corrupted = False
@@ -155,15 +155,11 @@ class TgUploader:
                                     LOGGER.error(f"Failed To Send Video in dump:\n{err}")
 
                     else:
-                        self.__sent_msg = await self.__sent_msg.reply_video(
-                            video=up_path,
-                            quote=True,
-                            caption=cap_mono,
-                            duration=duration,
-                            width=width,
-                            height=height,
+                        self.__sent_msg = await self.__app.send_document(
+                            chat_id=int(leechchat),
+                            document=up_path,
                             thumb=thumb,
-                            supports_streaming=True,
+                            caption=cap_mono,
                             disable_notification=True,
                             reply_markup=self.__button,
                             progress=self.__upload_progress
@@ -172,8 +168,7 @@ class TgUploader:
                             try:
                                 await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
-                                LOGGER.error(f"Failed To Send Video in PM:\n{err}")
-
+                                LOGGER.error(f"Failed To Send Document in PM:\n{err}")
 
                 elif is_audio:
                     duration, artist, title = get_media_info(up_path)
@@ -208,7 +203,6 @@ class TgUploader:
                     else:
                         self.__sent_msg = await self.__sent_msg.reply_audio(
                             audio=up_path,
-                            quote=True,
                             caption=cap_mono,
                             duration=duration,
                             performer=artist,
@@ -223,8 +217,9 @@ class TgUploader:
                                 await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
                                 LOGGER.error(f"Failed To Send Audio in PM:\n{err}")
-
-                elif file_.upper().endswith(IMAGE_SUFFIXES):
+                elif up_path.upper().endswith(IMAGE_SUFFIXES):
+                    with Image.open(up_path) as img:
+                        width, height = img.size
                     if 'is_leech_log' in user_data and user_data.get('is_leech_log'):
                         for leechchat in self.__leech_log:
                             if ospath.getsize(up_path) > tgBotMaxFileSize:
@@ -235,6 +230,8 @@ class TgUploader:
                                 chat_id=int(leechchat),
                                 photo=up_path,
                                 caption=cap_mono,
+                                width=width,
+                                height=height,
                                 disable_notification=True,
                                 reply_markup=self.__button,
                                 progress=self.__upload_progress
@@ -243,17 +240,18 @@ class TgUploader:
                                 try:
                                     await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                                 except Exception as err:
-                                    LOGGER.error(f"Failed To Send Image in PM:\n{err}")
+                                    LOGGER.error(f"Failed To Send Photo in PM:\n{err}")
                             if len(dumpid) != 0:
                                 try:
                                     await app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                                 except Exception as err:
-                                    LOGGER.error(f"Failed To Send Image in dump:\n{err}")
+                                    LOGGER.error(f"Failed To Send Photo in dump:\n{err}")
                     else:
                         self.__sent_msg = await self.__sent_msg.reply_photo(
                             photo=up_path,
-                            quote=True,
                             caption=cap_mono,
+                            width=width,
+                            height=height,
                             disable_notification=True,
                             reply_markup=self.__button,
                             progress=self.__upload_progress
@@ -262,107 +260,85 @@ class TgUploader:
                             try:
                                 await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
-                                LOGGER.error(f"Failed To Send Image in PM:\n{err}")
-
+                                LOGGER.error(f"Failed To Send Photo in PM:\n{err}")
                 else:
                     notMedia = True
+        except Exception as err:
+            LOGGER.error(err)
+            self.__is_corrupted = True
 
-            if self.__as_doc or notMedia:
-                if is_video and thumb is None:
-                    thumb = take_ss(up_path, None)
-                    if self.__is_cancelled:
-                        if self.__thumb is None and thumb is not None and ospath.lexists(thumb):
-                            osremove(thumb)
-                        return
+        if notMedia or self.__as_doc or self.__is_corrupted:
+            try:
+                if 'is_leech_log' in user_data and user_data.get('is_leech_log'):
+                    for leechchat in self.__leech_log:
+                        if ospath.getsize(up_path) > tgBotMaxFileSize:
+                            usingclient = premium_session
+                        else:
+                            usingclient = self.__app
+                        self.__sent_msg = await usingclient.send_document(
+                            chat_id=int(leechchat),
+                            document=up_path,
+                            caption=cap_mono,
+                            thumb=thumb,
+                            disable_notification=True,
+                            reply_markup=self.__button,
+                            progress=self.__upload_progress
+                        )
+                        if BOT_PM_X:
+                            try:
+                                await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                            except Exception as err:
+                                LOGGER.error(f"Failed To Send Document in PM:\n{err}")
+                        if len(dumpid) != 0:
+                            try:
+                                await app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                            except Exception as err:
+                                LOGGER.error(f"Failed To Send Document in dump:\n{err}")
 
-            if 'is_leech_log' in user_data and user_data.get('is_leech_log'):
-                for leechchat in self.__leech_log:
-                    if ospath.getsize(up_path) > tgBotMaxFileSize:
-                        usingclient = premium_session
-                    else:
-                        usingclient = self.__app
-
-                    self.__sent_msg = await usingclient.send_document(
-                        chat_id=int(leechchat),
+                else:
+                    self.__sent_msg = await self.__sent_msg.reply_document(
                         document=up_path,
-                        thumb=thumb,
                         caption=cap_mono,
+                        thumb=thumb,
                         disable_notification=True,
                         reply_markup=self.__button,
                         progress=self.__upload_progress
                     )
-                    if len(dumpid) != 0:
-                        try:
-                            await app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
-                        except Exception as err:
-                            LOGGER.error(f"Failed To Send Document in dump:\n{err}")
-                    if BOT_PM_X:
+                    if not self.isPrivate and BOT_PM_X:
                         try:
                             await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                         except Exception as err:
                             LOGGER.error(f"Failed To Send Document in PM:\n{err}")
-            else:
-                self.__sent_msg = await self.__sent_msg.reply_document(
-                    document=up_path,
-                    quote=True,
-                    thumb=thumb,
-                    caption=cap_mono,
-                    disable_notification=True,
-                    reply_markup=self.__button,
-                    progress=self.__upload_progress
-                )
-                if not self.isPrivate and BOT_PM_X:
-                    try:
-                        await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
-                    except Exception as err:
-                        LOGGER.error(f"Failed To Send Document in PM:\n{err}")
-
-        except FloodWait as f:
-            LOGGER.warning(str(f))
-            sleep(f.value)
-        except RPCError as e:
-            LOGGER.error(f"RPCError: {e} Path: {up_path}")
-            self.__corrupted += 1
-            self.__is_corrupted = True
-        except Exception as err:
-            LOGGER.error(f"{err} Path: {up_path}")
-            self.__corrupted += 1
-            self.__is_corrupted = True
-        if self.__thumb is None and thumb is not None and ospath.lexists(thumb):
+            except FloodWait as f:
+                LOGGER.warning(f"FloodWait: Sleeping for {f.value}")
+                sleep(f.value + 10)
+                self.__corrupted += 1
+            except RPCError as e:
+                LOGGER.error(e)
+                self.__is_corrupted = True
+            except Exception as err:
+                LOGGER.error(err)
+                self.__is_corrupted = True
+            if not self.__is_corrupted:
+                self.__corrupted += 1
+        if not self.__thumb is None and thumb is not None and ospath.lexists(thumb):
             osremove(thumb)
-        if not self.__is_cancelled and \
-                   (not self.__listener.seed or self.__listener.newDir or dirpath.endswith("splited_files_mltb")):
-            try:
-                osremove(up_path)
-            except:
-                pass
 
     def __upload_progress(self, current, total):
         if self.__is_cancelled:
-            app.stop_transmission()
-            return
-        with self.__resource_lock:
-            chunk_size = current - self._last_uploaded
-            self._last_uploaded = current
-            self.uploaded_bytes += chunk_size
+            self.__app.stop_transmission()
+        chunk_size = current - self.uploaded_bytes
+        self.__listener.onUploadProgress(self.name, self.__size, self.uploaded_bytes, current, total, time() - self.__start_time, chunk_size)
+        self.uploaded_bytes = current
+
+    def cancel_upload(self):
+        self.__is_cancelled = True
 
     def __user_settings(self):
-        user_id = self.__listener.message.from_user.id
-        user_dict = user_data.get(user_id, False)
-        if user_dict:
-            self.__as_doc = user_dict.get('as_doc', config_dict['AS_DOCUMENT'])
-        if not ospath.lexists(self.__thumb):
-            self.__thumb = None
+        if self.__listener.user_id in user_data:
+            self.__as_doc = user_data[self.__listener.user_id].get('as_doc', self.__as_doc)
 
     @property
-    def speed(self):
+    def is_cancelled(self):
         with self.__resource_lock:
-            try:
-                return self.uploaded_bytes / (time() - self.__start_time)
-            except:
-                return 0
-
-    def cancel_download(self):
-        self.__is_cancelled = True
-        LOGGER.info(f"Cancelling Upload: {self.name}")
-        self.__listener.onUploadError('Your upload has been stopped!')
+            return self.__is_cancelled
