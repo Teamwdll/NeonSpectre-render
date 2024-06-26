@@ -50,7 +50,7 @@ class TgUploader:
         except Exception as e:
             LOGGER.error(f"Failed to fetch initial message: {e}")
 
-    def upload(self, o_files):
+    async def upload(self, o_files):
         for dirpath, subdir, files in sorted(walk(self.__path)):
             for file_ in sorted(files):
                 if file_ in o_files:
