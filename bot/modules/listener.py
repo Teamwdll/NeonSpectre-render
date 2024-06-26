@@ -1,3 +1,4 @@
+import asyncio
 from random import choice
 from re import search as re_search
 from time import sleep, time
@@ -223,7 +224,7 @@ class MirrorLeechListener:
                 download_dict[self.uid] = QueueStatus(name, size, gid, self, 'Up')
                 self.queuedUp = True
             while self.queuedUp:
-                sleep(1)
+                await asyncio.sleep(1)
                 continue
             with download_dict_lock:
                 if self.uid not in download_dict.keys():
