@@ -75,7 +75,7 @@ class TgUploader:
         size = get_readable_file_size(self.__size)
         self.__listener.onUploadComplete(None, size, self.__msgs_dict, self.__total_files, self.__corrupted, self.name)
 
-    def __upload_file(self, up_path, file_, dirpath):
+    async def __upload_file(self, up_path, file_, dirpath):
         fsize = ospath.getsize(up_path)
         user_id_ = self.__listener.message.from_user.id
 
@@ -116,7 +116,7 @@ class TgUploader:
                         for leechchat in self.__leech_log:
                             if ospath.getsize(up_path) > tgBotMaxFileSize: usingclient = premium_session
                             else: usingclient = self.__app
-                            self.__sent_msg = usingclient.send_video(chat_id=int(leechchat),video=up_path,
+                            self.__sent_msg = await usingclient.send_video(chat_id=int(leechchat),video=up_path,
                                                                   caption=cap_mono,
                                                                   duration=duration,
                                                                   width=width,
@@ -128,17 +128,17 @@ class TgUploader:
                                                                   progress=self.__upload_progress)
                             if BOT_PM_X:
                                 try:
-                                    app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                    await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                                 except Exception as err:
                                     LOGGER.error(f"Failed To Send Video in PM:\n{err}")
                             if len(dumpid) != 0:
                                 try:
-                                    app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                    await app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                                 except Exception as err:
                                     LOGGER.error(f"Failed To Send Video in dump:\n{err}")
 
                     else:
-                        self.__sent_msg = self.__sent_msg.reply_video(video=up_path,
+                        self.__sent_msg = await self.__sent_msg.reply_video(video=up_path,
                                                                       quote=True,
                                                                       caption=cap_mono,
                                                                       duration=duration,
@@ -151,7 +151,7 @@ class TgUploader:
                                                                       progress=self.__upload_progress)
                         if not self.isPrivate and BOT_PM_X:
                             try:
-                                app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
                                 LOGGER.error(f"Failed To Send Vedio in PM:\n{err}")
                 elif is_audio:
@@ -160,7 +160,7 @@ class TgUploader:
                         for leechchat in self.__leech_log:
                             if ospath.getsize(up_path) > tgBotMaxFileSize: usingclient = premium_session
                             else: usingclient = self.__app
-                            self.__sent_msg = usingclient.send_audio(chat_id=int(leechchat),audio=up_path,
+                            self.__sent_msg = await usingclient.send_audio(chat_id=int(leechchat),audio=up_path,
                                                                   caption=cap_mono,
                                                                   duration=duration,
                                                                   performer=artist,
@@ -171,16 +171,16 @@ class TgUploader:
                                                                   progress=self.__upload_progress)
                             if BOT_PM_X:
                                 try:
-                                    app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                    await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                                 except Exception as err:
                                     LOGGER.error(f"Failed To Send Audio in PM:\n{err}")
                             if len(dumpid) != 0:
                                 try:
-                                    app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                    await app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                                 except Exception as err:
                                     LOGGER.error(f"Failed To Send Audio in dump:\n{err}")
                     else:
-                        self.__sent_msg = self.__sent_msg.reply_audio(audio=up_path,
+                        self.__sent_msg = await self.__sent_msg.reply_audio(audio=up_path,
                                                                       quote=True,
                                                                       caption=cap_mono,
                                                                       duration=duration,
@@ -192,7 +192,7 @@ class TgUploader:
                                                                       progress=self.__upload_progress)
                         if not self.isPrivate and BOT_PM_X:
                             try:
-                                app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
                                 LOGGER.error(f"Failed To Send Audio in PM:\n{err}")
 
@@ -201,7 +201,7 @@ class TgUploader:
                         for leechchat in self.__leech_log:
                             if ospath.getsize(up_path) > tgBotMaxFileSize: usingclient = premium_session
                             else: usingclient = self.__app
-                            self.__sent_msg = usingclient.send_photo(chat_id=int(leechchat),
+                            self.__sent_msg = await usingclient.send_photo(chat_id=int(leechchat),
                                                                 photo=up_path,
                                                                 caption=cap_mono,
                                                                 disable_notification=True,
@@ -209,16 +209,16 @@ class TgUploader:
                                                                 progress=self.__upload_progress)
                             if BOT_PM_X:
                                 try:
-                                    app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                    await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                                 except Exception as err:
                                     LOGGER.error(f"Failed To Send Image in PM:\n{err}")
                             if len(dumpid) != 0:
                                 try:
-                                    app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                    await app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                                 except Exception as err:
                                     LOGGER.error(f"Failed To Send Image in dump:\n{err}")
                     else:
-                        self.__sent_msg = self.__sent_msg.reply_photo(photo=up_path,
+                        self.__sent_msg = await self.__sent_msg.reply_photo(photo=up_path,
                                                                       quote=True,
                                                                       caption=cap_mono,
                                                                       disable_notification=True,
@@ -226,7 +226,7 @@ class TgUploader:
                                                                       progress=self.__upload_progress)
                         if not self.isPrivate and BOT_PM_X:
                             try:
-                                app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
                                 LOGGER.error(f"Failed To Send Image in PM:\n{err}")
                 else:
@@ -242,7 +242,7 @@ class TgUploader:
                     for leechchat in self.__leech_log:
                         if ospath.getsize(up_path) > tgBotMaxFileSize: usingclient = premium_session
                         else: usingclient = self.__app
-                        self.__sent_msg = usingclient.send_document(chat_id=int(leechchat),
+                        self.__sent_msg = await usingclient.send_document(chat_id=int(leechchat),
                                                                 document=up_path,
                                                                 thumb=thumb,
                                                                 caption=cap_mono,
@@ -251,16 +251,16 @@ class TgUploader:
                                                                 progress=self.__upload_progress)
                         if len(dumpid) != 0:
                             try:
-                                app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                await app.copy_message(chat_id=LEECH_X, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
                                 LOGGER.error(f"Failed To Send Document in dump:\n{err}")
                         if BOT_PM_X:
                             try:
-                                app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
                                 LOGGER.error(f"Failed To Send Document in PM:\n{err}")
                 else:
-                    self.__sent_msg = self.__sent_msg.reply_document(document=up_path,
+                    self.__sent_msg = await self.__sent_msg.reply_document(document=up_path,
                                                                      quote=True,
                                                                      thumb=thumb,
                                                                      caption=cap_mono,
@@ -269,7 +269,7 @@ class TgUploader:
                                                                      progress=self.__upload_progress)
                     if not self.isPrivate and BOT_PM_X:
                             try:
-                                app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
+                                await app.copy_message(chat_id=self.__user_id, from_chat_id=self.__sent_msg.chat.id, message_id=self.__sent_msg.id)
                             except Exception as err:
                                 LOGGER.error(f"Failed To Send Document in PM:\n{err}")
         except FloodWait as f:
