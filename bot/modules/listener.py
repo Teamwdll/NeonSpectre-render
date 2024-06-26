@@ -66,7 +66,7 @@ class MirrorLeechListener:
         if not self.isPrivate and config_dict['INCOMPLETE_TASK_NOTIFIER'] and DATABASE_URL:
             DbManger().add_incomplete_task(self.message.chat.id, self.message.link, self.tag)
 
-    def onDownloadComplete(self):
+    async def onDownloadComplete(self):
         user_dict = user_data.get(self.message.from_user.id, False)
         with download_dict_lock:
             download = download_dict[self.uid]
@@ -242,7 +242,7 @@ class MirrorLeechListener:
             with download_dict_lock:
                 download_dict[self.uid] = tg_upload_status
             update_all_messages()
-            tg.upload(o_files)
+            await tg.upload(o_files)
         else:
             up_path = f'{up_dir}/{up_name}'
             size = get_path_size(up_path)
