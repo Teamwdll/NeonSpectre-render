@@ -42,7 +42,7 @@ class TgUploader:
     async def initialize_sent_msg(self):
         self.__sent_msg = await app.get_messages(self.__listener.message.chat.id, self.__listener.uid)
 
-    def upload(self, o_files):
+    async def upload(self, o_files):
         for dirpath, subdir, files in sorted(walk(self.__path)):
             for file_ in sorted(files):
                 if file_ in o_files:
@@ -79,7 +79,7 @@ class TgUploader:
         size = get_readable_file_size(self.__size)
         self.__listener.onUploadComplete(None, size, self.__msgs_dict, self.__total_files, self.__corrupted, self.name)
 
-    def __upload_file(self, up_path, file_, dirpath):
+    async def __upload_file(self, up_path, file_, dirpath):
         fsize = ospath.getsize(up_path)
         user_id_ = self.__listener.message.from_user.id
 
