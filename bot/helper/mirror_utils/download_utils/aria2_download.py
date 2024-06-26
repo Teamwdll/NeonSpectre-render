@@ -1,3 +1,4 @@
+import asyncio
 from re import match
 from time import sleep, time
 from os import remove, path as ospath
@@ -142,7 +143,7 @@ def __onDownloadComplete(api, gid):
     else:
         LOGGER.info(f"onDownloadComplete: {download.name} - Gid: {gid}")
         if dl := getDownloadByGid(gid):
-            dl.listener().onDownloadComplete()
+            asyncio.run(dl.listener().onDownloadComplete())
             api.remove([download], force=True, files=True)
 
 
