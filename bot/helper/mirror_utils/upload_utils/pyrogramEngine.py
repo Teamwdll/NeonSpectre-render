@@ -10,7 +10,7 @@ from bot.helper.ext_utils.bot_utils import get_readable_file_size, change_filena
 from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 LOGGER = getLogger(__name__)
-getLogger("hyrogram").setLevel(ERROR)
+getLogger("hydrogram").setLevel(ERROR)
 IMAGE_SUFFIXES = ("JPG", "JPX", "PNG", "CR2", "TIF", "BMP", "JXR", "PSD", "ICO", "HEIC", "JPEG")
 class TgUploader:
 
