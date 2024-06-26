@@ -38,7 +38,7 @@ class TgUploader:
         self.__button = InlineKeyboardMarkup([[InlineKeyboardButton(text='Save Message', callback_data="save")]]) if config_dict['SAVE_MSG'] else None
         self.isPrivate = listener.message.chat.type in ['private', 'group']
 
-    def upload(self, o_files):
+    async def upload(self, o_files):
         for dirpath, subdir, files in sorted(walk(self.__path)):
             for file_ in sorted(files):
                 if file_ in o_files:
@@ -56,11 +56,12 @@ class TgUploader:
                             return
                         LOGGER.error(e)
                         continue
-                    self.__upload_file(up_path, file_, dirpath)
+                    await self.__upload_file(up_path, file_, dirpath)
                     if self.__is_cancelled:
                         return
                     if not self.__listener.isPrivate and not self.__is_corrupted:
-                        self.__msgs_dict[self.__sent_msg.link] = file_
+                        sent_msg = await self.__sent_msg()
+                        self.__msgs_dict[sent_msg.link] = file_
                     self._last_uploaded = 0
                     sleep(1)
         if self.__listener.seed and not self.__listener.newDir:
