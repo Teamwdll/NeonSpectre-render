@@ -293,7 +293,7 @@ class TgUploader:
             except:
                 pass
 
-    def __upload_progress(self, current, total):
+    async def __upload_progress(self, current, total):
         if self.__is_cancelled:
             app.stop_transmission()
             return
@@ -302,7 +302,7 @@ class TgUploader:
             self._last_uploaded = current
             self.uploaded_bytes += chunk_size
 
-    def __user_settings(self):
+    async def __user_settings(self):
         user_id = self.__listener.message.from_user.id
         user_dict = user_data.get(user_id, False)
         if user_dict:
@@ -318,7 +318,7 @@ class TgUploader:
             except:
                 return 0
 
-    def cancel_download(self):
+    async def cancel_download(self):
         self.__is_cancelled = True
         LOGGER.info(f"Cancelling Upload: {self.name}")
         self.__listener.onUploadError('Your upload has been stopped!')
