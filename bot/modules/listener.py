@@ -78,8 +78,8 @@ class MirrorLeechListener:
           try: 
             files = await listdir(self.dir)
           except Exception as e:
-                await self.onUploadError(str(e))
-                return
+            await self.onUploadError(str(e))
+            return
             name = files[-1]
         m_path = f'{self.dir}/{name}'
         size =await get_path_size(m_path)
