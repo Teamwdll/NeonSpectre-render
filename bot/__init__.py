@@ -1,3 +1,4 @@
+import asyncio
 from PIL import Image
 from logging import getLogger, FileHandler, StreamHandler, INFO, basicConfig, error as log_error, info as log_info, warning as log_warning
 from socket import setdefaulttimeout
@@ -59,9 +60,9 @@ try:
 except:
     pass
 
-download_dict_lock = Lock()
-status_reply_dict_lock = Lock()
-queue_dict_lock = Lock()
+download_dict_lock = asyncio.Lock()
+status_reply_dict_lock = asyncio.Lock()
+queue_dict_lock = asyncio.Lock()
 # Key: update.effective_chat.id
 # Value: telegram.Message
 status_reply_dict = {}
