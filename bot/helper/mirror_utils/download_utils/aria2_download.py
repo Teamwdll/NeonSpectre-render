@@ -232,7 +232,7 @@ def start_listener():
                                   on_bt_download_complete=__onBtDownloadComplete,
                                   timeout=60)
 
-def add_aria2c_download(link: str, path, listener, filename, auth, ratio, seed_time):
+async def add_aria2c_download(link: str, path, listener, filename, auth, ratio, seed_time):
     args = {'dir': path, 'max-upload-limit': '1K', 'netrc-path': '/usr/src/app/.netrc'}
     a2c_opt = {**aria2_options}
     [a2c_opt.pop(k) for k in aria2c_global if k in aria2_options]
@@ -248,28 +248,28 @@ def add_aria2c_download(link: str, path, listener, filename, auth, ratio, seed_t
     if TORRENT_TIMEOUT := config_dict['TORRENT_TIMEOUT']:
         args['bt-stop-timeout'] = str(TORRENT_TIMEOUT)
     if is_magnet(link):
-        download = aria2.add_magnet(link, args)
+        download = await aria2.add_magnet(link, args)
     elif match(r'https?://.+\/\d+\:\/', link) and link[-1] == '/':
         links, error = indexScrape({"page_token": "", "page_index": 0}, link, auth, folder_mode=True)
         if error:
             LOGGER.info(f"Download Error: {links}")
-            return sendMessage(links, listener.bot, listener.message)
+            return await sendMessage(links, listener.bot, listener.message)
         dls = []
         for link in links:
-            dls.append(aria2.add_uris([link], args))
+            dls.append(await aria2.add_uris([link], args))
         LOGGER.info(dls)
         download = dls[0]
     else:
-        download = aria2.add_uris([link], args)
+        download = await aria2.add_uris([link], args)
     if download.error_message:
         error = str(download.error_message).replace('<', ' ').replace('>', ' ')
         LOGGER.info(f"Download Error: {error}")
-        return sendMessage(error, listener.bot, listener.message)
-    with download_dict_lock:
+        return await sendMessage(error, listener.bot, listener.message)
+    async with download_dict_lock:
         download_dict[listener.uid] = AriaDownloadStatus(download.gid, listener)
         LOGGER.info(f"Aria2Download started: {download.gid}")
     listener.onDownloadStart()
     if not listener.select:
-        sendStatusMessage(listener.message, listener.bot)
+        await sendStatusMessage(listener.message, listener.bot)
 
 start_listener()
