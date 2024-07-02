@@ -10,8 +10,8 @@ from bot.helper.telegram_helper.filters import CustomFilters
 from bot.helper.telegram_helper.bot_commands import BotCommands
 
 
-def mirror_status(update, context):
-    with download_dict_lock:
+async def mirror_status(update, context):
+    async with download_dict_lock:
         count = len(download_dict)
     if count == 0:
         currentTime = get_readable_time(time() - botStartTime)
@@ -19,19 +19,19 @@ def mirror_status(update, context):
         message = 'No Active Downloads !\n___________________________'
         message += f"\n<b>CPU:</b> {cpu_percent()}% | <b>FREE:</b> {free}" \
                    f"\n<b>RAM:</b> {virtual_memory().percent}% | <b>UPTIME:</b> {currentTime}"
-        reply_message = sendMessage(message, context.bot, update.message)
+        reply_message = await sendMessage(message, context.bot, update.message)
         Thread(target=auto_delete_message, args=(context.bot, update.message, reply_message)).start()
     else:
-        sendStatusMessage(update.message, context.bot)
-        deleteMessage(context.bot, update.message)
-        with status_reply_dict_lock:
+        await sendStatusMessage(update.message, context.bot)
+        await deleteMessage(context.bot, update.message)
+        async with status_reply_dict_lock:
             if Interval:
                 Interval[0].cancel()
                 Interval.clear()
                 Interval.append(setInterval(config_dict['STATUS_UPDATE_INTERVAL'], update_all_messages))
 
 @new_thread
-def status_pages(update, context):
+async def status_pages(update, context):
     query = update.callback_query
     msg = query.message
     user_id = query.from_user.id
@@ -44,21 +44,21 @@ def status_pages(update, context):
         if config_dict['PICS']: editCaption(f"{user_name}, Refreshing Status...", msg)
         else: editMessage(f"{user_name}, Refreshing Status...", msg)
         sleep(2)
-        update_all_messages()
+        await update_all_messages()
         query.answer()
     if data[1] == "stats":
         stats = pop_up_stats()
         query.answer(text=stats, show_alert=True)
     if data[1] == "close":
         if admins:
-            delete_all_messages()
+            await delete_all_messages()
             query.answer()
         else:
             query.answer(text=f"{user_name}, You Don't Have Rights To Close This!", show_alert=True)
     if data[1] == "pre" or "nex":
         done = turn(data)
     if done:
-        update_all_messages(True)
+        await update_all_messages(True)
         query.answer()
     else:
         msg.delete()
