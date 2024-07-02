@@ -98,15 +98,15 @@ def get_readable_file_size(size_in_bytes) -> str:
     except IndexError:
         return 'File too large'
 
-def getDownloadByGid(gid):
-    with download_dict_lock:
+async def getDownloadByGid(gid):
+    async with download_dict_lock:
         for dl in list(download_dict.values()):
             if dl.gid() == gid:
                 return dl
     return None
 
-def getAllDownload(req_status: str):
-    with download_dict_lock:
+async def getAllDownload(req_status: str):
+    async with download_dict_lock:
         for dl in list(download_dict.values()):
             status = dl.status()
             if req_status in ['all', status]:
