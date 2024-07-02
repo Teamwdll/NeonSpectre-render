@@ -232,7 +232,7 @@ def start_listener():
                                   on_bt_download_complete=__onBtDownloadComplete,
                                   timeout=60)
 
-async def add_aria2c_download(link: str, path, listener, filename, auth, ratio, seed_time):
+def add_aria2c_download(link: str, path, listener, filename, auth, ratio, seed_time):
     args = {'dir': path, 'max-upload-limit': '1K', 'netrc-path': '/usr/src/app/.netrc'}
     a2c_opt = {**aria2_options}
     [a2c_opt.pop(k) for k in aria2c_global if k in aria2_options]
@@ -253,7 +253,7 @@ async def add_aria2c_download(link: str, path, listener, filename, auth, ratio, 
         links, error = indexScrape({"page_token": "", "page_index": 0}, link, auth, folder_mode=True)
         if error:
             LOGGER.info(f"Download Error: {links}")
-            return await sendMessage(links, listener.bot, listener.message)
+            return sendMessage(links, listener.bot, listener.message)
         dls = []
         for link in links:
             dls.append(aria2.add_uris([link], args))
@@ -264,12 +264,12 @@ async def add_aria2c_download(link: str, path, listener, filename, auth, ratio, 
     if download.error_message:
         error = str(download.error_message).replace('<', ' ').replace('>', ' ')
         LOGGER.info(f"Download Error: {error}")
-        return await sendMessage(error, listener.bot, listener.message)
+        return sendMessage(error, listener.bot, listener.message)
     with download_dict_lock:
         download_dict[listener.uid] = AriaDownloadStatus(download.gid, listener)
         LOGGER.info(f"Aria2Download started: {download.gid}")
     listener.onDownloadStart()
     if not listener.select:
-        await sendStatusMessage(listener.message, listener.bot)
+        sendStatusMessage(listener.message, listener.bot)
 
 start_listener()
