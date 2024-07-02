@@ -220,7 +220,7 @@ async def __onDownloadError(api, gid):
     except:
         pass
     dl = getDownloadByGid(gid)
-    if :
+    if dl:
         await dl.listener().onDownloadError(error)
 
 def start_listener():
