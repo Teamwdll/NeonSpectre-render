@@ -1,17 +1,26 @@
-from telegram.ext import CallbackQueryHandler
-from bot import dispatcher
+#!/usr/bin/env python3
+from hydrogram.types import InlineKeyboardMarkup 
+from hydrogram.handlers import CallbackQueryHandler
+from hydrogram.filters import regex
+from asyncio import sleep
 
-def save_message(update, context):
-    """ By Junedkh ( https://github.com/junedkh/jmdkh-mltb ) """
+from bot import bot, bot_name, user_data
 
-    query = update.callback_query
+async def save_message(_, query):
+    usr = query.from_user.id
+    user_dict = user_data.get(usr, {})
     if query.data == "save":
+        if user_dict.get('save_mode'):
+            usr = next(iter(user_dict.get('ldump', {}).values()))
         try:
-            del query.message.reply_markup['inline_keyboard'][-1]
-            query.message.copy(query.from_user.id, reply_markup=query.message.reply_markup)
-            query.answer('Message Saved Successfully, Check Bot PM', show_alert=True)
+            await query.message.copy(usr, reply_markup=InlineKeyboardMarkup(BTN) if (BTN := query.message.reply_markup.inline_keyboard[:-1]) else None)
+            await query.answer("Message/Media Successfully Saved !", show_alert=True)
         except:
-            query.answer('Start the Bot in Private and Try Again', show_alert=True)
+            if user_dict.get('save_mode'):
+                await query.answer('Make Bot as Admin and give Post Permissions and Try Again', show_alert=True)
+            else:
+                await query.answer(url=f"https://t.me/{bot_name}?start=start")
+                await sleep(1)
+                await query.message.copy(usr, reply_markup=InlineKeyboardMarkup(BTN) if (BTN := query.message.reply_markup.inline_keyboard[:-1]) else None)
 
-msgsave_handler = CallbackQueryHandler(save_message, pattern="save")
-dispatcher.add_handler(msgsave_handler)
+bot.add_handler(CallbackQueryHandler(save_message, filters=regex(r"^save")))

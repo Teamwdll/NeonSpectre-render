@@ -1,33 +1,33 @@
-import asyncio
-from PIL import Image
-from logging import getLogger, FileHandler, StreamHandler, INFO, basicConfig, error as log_error, info as log_info, warning as log_warning
-from socket import setdefaulttimeout
-from urllib.request import urlretrieve
-from faulthandler import enable as faulthandler_enable
-from telegram.ext import Updater as tgUpdater, Defaults
-from qbittorrentapi import Client as qbClient
-from aria2p import API as ariaAPI, Client as ariaClient
-from os import remove as osremove, path as ospath, environ, mkdir
-from requests import get as rget
-from subprocess import Popen, run as srun, check_output
-from time import sleep, time
-from threading import Thread, Lock
-from dotenv import load_dotenv
-from hydrogram import Client, enums
-from asyncio import get_event_loop
+#!/usr/bin/env python3
+from tzlocal import get_localzone
+from pytz import timezone
+from datetime import datetime
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from hydrogram import Client as tgClient, enums
 from pymongo import MongoClient
-
-main_loop = get_event_loop()
+from asyncio import Lock
+from dotenv import load_dotenv, dotenv_values
+from threading import Thread
+from time import sleep, time
+from subprocess import Popen, run as srun
+from os import remove as osremove, path as ospath, environ, getcwd
+from aria2p import API as ariaAPI, Client as ariaClient
+from qbittorrentapi import Client as qbClient
+from faulthandler import enable as faulthandler_enable
+from socket import setdefaulttimeout
+from logging import getLogger, Formatter, FileHandler, StreamHandler, INFO, basicConfig, error as log_error, info as log_info, warning as log_warning
+from uvloop import install
 
 faulthandler_enable()
-
+install()
 setdefaulttimeout(600)
 
 botStartTime = time()
 
-basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    handlers=[FileHandler('log.txt'), StreamHandler()],
-                    level=INFO)
+basicConfig(format="[%(asctime)s] [%(levelname)s] - %(message)s", #  [%(filename)s:%(lineno)d]
+            datefmt="%d-%b-%y %I:%M:%S %p",
+            handlers=[FileHandler('log.txt'), StreamHandler()],
+            level=INFO)
 
 LOGGER = getLogger(__name__)
 
@@ -35,23 +35,21 @@ load_dotenv('config.env', override=True)
 
 Interval = []
 QbInterval = []
-DRIVES_NAMES = []
-DRIVES_IDS = []
-INDEX_URLS = []
-CATEGORY_NAMES = []
-CATEGORY_IDS = []
-CATEGORY_INDEX = []
-user_data = {} # {user_id: [datetime(date), daily_tasks: int, leech, mirror]}
+QbTorrents = {}
+GLOBAL_EXTENSION_FILTER = ['aria2', '!qB']
+user_data = {}
+extra_buttons = {}
+list_drives_dict = {}
+shorteners_list = []
+categories_dict = {}
 aria2_options = {}
 qbit_options = {}
 queued_dl = {}
 queued_up = {}
+bot_cache = {}
 non_queued_dl = set()
 non_queued_up = set()
-ulist_listener = {}
-TIME_GAP_STORE = {}
 
-GLOBAL_EXTENSION_FILTER = ['.aria2']
 
 try:
     if bool(environ.get('_____REMOVE_THIS_LINE_____')):
@@ -60,31 +58,20 @@ try:
 except:
     pass
 
-download_dict_lock = asyncio.Lock()
-status_reply_dict_lock = asyncio.Lock()
-queue_dict_lock = asyncio.Lock()
-# Key: update.effective_chat.id
-# Value: telegram.Message
+download_dict_lock = Lock()
+status_reply_dict_lock = Lock()
+queue_dict_lock = Lock()
+qb_listener_lock = Lock()
 status_reply_dict = {}
-# Key: update.message.message_id
-# Value: An object of Status
 download_dict = {}
-# key: rss_title
-# value: {link, last_feed, last_title, filter}
 rss_dict = {}
-btn_listener = {}
-
-if ospath.exists('hydrogram.session'):
-    osremove('hydrogram.session')
-if ospath.exists('hydrogram.session-journal'):
-    osremove('hydrogram.session-journal')
 
 BOT_TOKEN = environ.get('BOT_TOKEN', '')
 if len(BOT_TOKEN) == 0:
     log_error("BOT_TOKEN variable is missing! Exiting now")
     exit(1)
 
-bot_id = int(BOT_TOKEN.split(':', 1)[0])
+bot_id = BOT_TOKEN.split(':', 1)[0]
 
 DATABASE_URL = environ.get('DATABASE_URL', '')
 if len(DATABASE_URL) == 0:
@@ -92,8 +79,18 @@ if len(DATABASE_URL) == 0:
 
 if DATABASE_URL:
     conn = MongoClient(DATABASE_URL)
-    db = conn.wzmlunion
-    if config_dict := db.settings.config.find_one({'_id': bot_id}):  #retrun config dict (all env vars)
+    db = conn.wzmlx
+    current_config = dict(dotenv_values('config.env'))
+    old_config = db.settings.deployConfig.find_one({'_id': bot_id})
+    if old_config is None:
+        db.settings.deployConfig.replace_one(
+            {'_id': bot_id}, current_config, upsert=True)
+    else:
+        del old_config['_id']
+    if old_config and old_config != current_config:
+        db.settings.deployConfig.replace_one(
+            {'_id': bot_id}, current_config, upsert=True)
+    elif config_dict := db.settings.config.find_one({'_id': bot_id}):
         del config_dict['_id']
         for key, value in config_dict.items():
             environ[key] = str(value)
@@ -112,7 +109,7 @@ if DATABASE_URL:
         qbit_options = qbit_opt
     conn.close()
     BOT_TOKEN = environ.get('BOT_TOKEN', '')
-    bot_id = int(BOT_TOKEN.split(':', 1)[0])
+    bot_id = BOT_TOKEN.split(':', 1)[0]
     DATABASE_URL = environ.get('DATABASE_URL', '')
 else:
     config_dict = {}
@@ -135,32 +132,37 @@ TELEGRAM_HASH = environ.get('TELEGRAM_HASH', '')
 if len(TELEGRAM_HASH) == 0:
     log_error("TELEGRAM_HASH variable is missing! Exiting now")
     exit(1)
+    
+TIMEZONE = environ.get('TIMEZONE', '')
+if len(TIMEZONE) == 0:
+    TIMEZONE = 'Asia/Kolkata'
+    
+def changetz(*args):
+    return datetime.now(timezone(TIMEZONE)).timetuple()
+Formatter.converter = changetz
+log_info("TIMEZONE synced with logging status")
 
 GDRIVE_ID = environ.get('GDRIVE_ID', '')
 if len(GDRIVE_ID) == 0:
     GDRIVE_ID = ''
+
+RCLONE_PATH = environ.get('RCLONE_PATH', '')
+if len(RCLONE_PATH) == 0:
+    RCLONE_PATH = ''
+
+RCLONE_FLAGS = environ.get('RCLONE_FLAGS', '')
+if len(RCLONE_FLAGS) == 0:
+    RCLONE_FLAGS = ''
+
+DEFAULT_UPLOAD = environ.get('DEFAULT_UPLOAD', '')
+if DEFAULT_UPLOAD != 'rc' and DEFAULT_UPLOAD != 'ddl':
+    DEFAULT_UPLOAD = 'gd'
 
 DOWNLOAD_DIR = environ.get('DOWNLOAD_DIR', '')
 if len(DOWNLOAD_DIR) == 0:
     DOWNLOAD_DIR = '/usr/src/app/downloads/'
 elif not DOWNLOAD_DIR.endswith("/"):
     DOWNLOAD_DIR = f'{DOWNLOAD_DIR}/'
-
-SA_MAIL = environ.get('SA_MAIL', '')
-if len(SA_MAIL) == 0:
-    SA_MAIL = '#SA'    
-
-TGH_THUMB = environ.get('TGH_THUMB', '')
-if len(TGH_THUMB) == 0:
-    TGH_THUMB = 'https://graph.org/file/c4cf01cec801c205bc727.jpg'
-
-path = "Thumbnails/"
-if not ospath.isdir(path):
-    mkdir(path)
-photo_dir = path + TGH_THUMB.split('/')[-1]
-urlretrieve(TGH_THUMB, photo_dir)
-Image.open(photo_dir).convert("RGB").save('Thumbnails/weeb.jpg', "JPEG")
-osremove(photo_dir)
 
 AUTHORIZED_CHATS = environ.get('AUTHORIZED_CHATS', '')
 if len(AUTHORIZED_CHATS) != 0:
@@ -173,45 +175,365 @@ if len(SUDO_USERS) != 0:
     aid = SUDO_USERS.split()
     for id_ in aid:
         user_data[int(id_.strip())] = {'is_sudo': True}
-
-PAID_USERS = environ.get('PAID_USERS', '')
-if len(PAID_USERS) != 0:
-    aid = PAID_USERS.split()
-    for id_ in aid:
-        user_data[int(id_.strip())] = {'is_paid': True}
-
-LOG_LEECH = environ.get('LOG_LEECH', '')
-if len(LOG_LEECH) != 0:
-    aid = LOG_LEECH.split(' ')
-    user_data['is_log_leech'] = [int(id_.strip()) for id_ in aid]
-
-LEECH_LOG = environ.get('LEECH_LOG', '')
-if len(LEECH_LOG) != 0:
-    aid = LEECH_LOG.split(' ')
-    user_data['is_leech_log'] = [int(id_.strip()) for id_ in aid]
-
-MIRROR_LOGS = environ.get('MIRROR_LOGS', '')
-if len(MIRROR_LOGS) != 0:
-    aid = MIRROR_LOGS.split(' ')
-    user_data['mirror_logs'] = [int(id_.strip()) for id_ in aid]
-
-LINK_LOGS = environ.get('LINK_LOGS', '')
-if len(LINK_LOGS) != 0:
-    aid = LINK_LOGS.split(' ')
-    user_data['link_logs'] = [int(id_.strip()) for id_ in aid]
-
-SAVE_MSG = environ.get('SAVE_MSG', '')
-SAVE_MSG = SAVE_MSG.lower() == 'true'
+        
+BLACKLIST_USERS = environ.get('BLACKLIST_USERS', '')
+if len(BLACKLIST_USERS) != 0:
+    for id_ in BLACKLIST_USERS.split():
+        user_data[int(id_.strip())] = {'is_blacklist': True}
 
 EXTENSION_FILTER = environ.get('EXTENSION_FILTER', '')
 if len(EXTENSION_FILTER) > 0:
     fx = EXTENSION_FILTER.split()
     for x in fx:
+        x = x.lstrip('.')
         GLOBAL_EXTENSION_FILTER.append(x.strip().lower())
 
-DEF_ANI_TEMP  = environ.get('ANIME_TEMPLATE', '')
-if len(DEF_ANI_TEMP) == 0:
-    DEF_ANI_TEMP = '''<b>{ro_title}</b>({na_title})
+IS_PREMIUM_USER = False
+user = ''
+USER_SESSION_STRING = environ.get('USER_SESSION_STRING', '')
+if len(USER_SESSION_STRING) != 0:
+    log_info("Creating client from USER_SESSION_STRING")
+    try:
+        user = tgClient('user', TELEGRAM_API, TELEGRAM_HASH, session_string=USER_SESSION_STRING,
+                        parse_mode=enums.ParseMode.HTML).start()
+        IS_PREMIUM_USER = user.me.is_premium
+    except Exception as e:
+        log_error(f"Failed making client from USER_SESSION_STRING : {e}")
+        user = ''
+
+MEGA_EMAIL = environ.get('MEGA_EMAIL', '')
+MEGA_PASSWORD = environ.get('MEGA_PASSWORD', '')
+if len(MEGA_EMAIL) == 0 or len(MEGA_PASSWORD) == 0:
+    log_warning('MEGA Credentials not provided!')
+    MEGA_EMAIL = ''
+    MEGA_PASSWORD = ''
+
+UPTOBOX_TOKEN = environ.get('UPTOBOX_TOKEN', '')
+if len(UPTOBOX_TOKEN) == 0:
+    UPTOBOX_TOKEN = ''
+    
+GDTOT_CRYPT = environ.get('GDTOT_CRYPT', '')
+if len(GDTOT_CRYPT) == 0:
+    GDTOT_CRYPT = ''
+
+DEBRID_API_KEY = environ.get('DEBRID_API_KEY', '')
+if len(DEBRID_API_KEY) == 0:
+    DEBRID_API_KEY = ''
+
+INDEX_URL = environ.get('INDEX_URL', '').rstrip("/")
+if len(INDEX_URL) == 0:
+    INDEX_URL = ''
+
+SEARCH_API_LINK = environ.get('SEARCH_API_LINK', '').rstrip("/")
+if len(SEARCH_API_LINK) == 0:
+    SEARCH_API_LINK = ''
+
+CAP_FONT = environ.get('CAP_FONT', '').lower()
+if CAP_FONT.strip() not in ['', 'b', 'i', 'u', 's', 'spoiler', 'code']:
+    CAP_FONT = 'code'
+
+LEECH_FILENAME_PREFIX = environ.get('LEECH_FILENAME_PREFIX', '')
+if len(LEECH_FILENAME_PREFIX) == 0:
+    LEECH_FILENAME_PREFIX = ''
+
+LEECH_FILENAME_SUFFIX = environ.get('LEECH_FILENAME_SUFFIX', '')
+if len(LEECH_FILENAME_SUFFIX) == 0:
+    LEECH_FILENAME_SUFFIX = ''
+
+LEECH_FILENAME_CAPTION = environ.get('LEECH_FILENAME_CAPTION', '')
+if len(LEECH_FILENAME_CAPTION) == 0:
+    LEECH_FILENAME_CAPTION = ''
+
+LEECH_FILENAME_REMNAME = environ.get('LEECH_FILENAME_REMNAME', '')
+if len(LEECH_FILENAME_REMNAME) == 0:
+    LEECH_FILENAME_REMNAME = ''
+    
+MIRROR_FILENAME_PREFIX = environ.get('MIRROR_FILENAME_PREFIX', '')
+if len(MIRROR_FILENAME_PREFIX) == 0:
+    MIRROR_FILENAME_PREFIX = ''
+
+MIRROR_FILENAME_SUFFIX = environ.get('MIRROR_FILENAME_SUFFIX', '')
+if len(MIRROR_FILENAME_SUFFIX) == 0:
+    MIRROR_FILENAME_SUFFIX = ''
+
+MIRROR_FILENAME_REMNAME = environ.get('MIRROR_FILENAME_REMNAME', '')
+if len(MIRROR_FILENAME_REMNAME) == 0:
+    MIRROR_FILENAME_REMNAME = ''
+
+SEARCH_PLUGINS = environ.get('SEARCH_PLUGINS', '')
+if len(SEARCH_PLUGINS) == 0:
+    SEARCH_PLUGINS = ''
+
+MAX_SPLIT_SIZE = 4194304000 if IS_PREMIUM_USER else 2097152000
+
+LEECH_SPLIT_SIZE = environ.get('LEECH_SPLIT_SIZE', '')
+if str(LEECH_SPLIT_SIZE) in ["4194304000", "2097152000"] or len(LEECH_SPLIT_SIZE) == 0 or int(LEECH_SPLIT_SIZE) > MAX_SPLIT_SIZE:
+    LEECH_SPLIT_SIZE = MAX_SPLIT_SIZE
+else:
+    LEECH_SPLIT_SIZE = int(LEECH_SPLIT_SIZE)
+
+BOT_MAX_TASKS = environ.get('BOT_MAX_TASKS', '')
+BOT_MAX_TASKS = int(BOT_MAX_TASKS) if BOT_MAX_TASKS.isdigit() else ''
+
+STATUS_UPDATE_INTERVAL = environ.get('STATUS_UPDATE_INTERVAL', '')
+if len(STATUS_UPDATE_INTERVAL) == 0:
+    STATUS_UPDATE_INTERVAL = 10
+else:
+    STATUS_UPDATE_INTERVAL = int(STATUS_UPDATE_INTERVAL)
+
+AUTO_DELETE_MESSAGE_DURATION = environ.get('AUTO_DELETE_MESSAGE_DURATION', '')
+if len(AUTO_DELETE_MESSAGE_DURATION) == 0:
+    AUTO_DELETE_MESSAGE_DURATION = 30
+else:
+    AUTO_DELETE_MESSAGE_DURATION = int(AUTO_DELETE_MESSAGE_DURATION)
+
+YT_DLP_OPTIONS = environ.get('YT_DLP_OPTIONS', '')
+if len(YT_DLP_OPTIONS) == 0:
+    YT_DLP_OPTIONS = ''
+
+SEARCH_LIMIT = environ.get('SEARCH_LIMIT', '')
+SEARCH_LIMIT = 0 if len(SEARCH_LIMIT) == 0 else int(SEARCH_LIMIT)
+
+STATUS_LIMIT = environ.get('STATUS_LIMIT', '')
+STATUS_LIMIT = 6 if len(STATUS_LIMIT) == 0 else int(STATUS_LIMIT)
+
+CMD_SUFFIX = environ.get('CMD_SUFFIX', '')
+
+RSS_CHAT_ID = environ.get('RSS_CHAT_ID', '')
+RSS_CHAT_ID = '' if len(RSS_CHAT_ID) == 0 else int(RSS_CHAT_ID)
+
+RSS_DELAY = environ.get('RSS_DELAY', '')
+RSS_DELAY = 600 if len(RSS_DELAY) == 0 else int(RSS_DELAY)
+
+TORRENT_TIMEOUT = environ.get('TORRENT_TIMEOUT', '')
+TORRENT_TIMEOUT = '' if len(TORRENT_TIMEOUT) == 0 else int(TORRENT_TIMEOUT)
+
+QUEUE_ALL = environ.get('QUEUE_ALL', '')
+QUEUE_ALL = '' if len(QUEUE_ALL) == 0 else int(QUEUE_ALL)
+
+QUEUE_DOWNLOAD = environ.get('QUEUE_DOWNLOAD', '')
+QUEUE_DOWNLOAD = '' if len(QUEUE_DOWNLOAD) == 0 else int(QUEUE_DOWNLOAD)
+
+QUEUE_UPLOAD = environ.get('QUEUE_UPLOAD', '')
+QUEUE_UPLOAD = '' if len(QUEUE_UPLOAD) == 0 else int(QUEUE_UPLOAD)
+
+INCOMPLETE_TASK_NOTIFIER = environ.get('INCOMPLETE_TASK_NOTIFIER', '')
+INCOMPLETE_TASK_NOTIFIER = INCOMPLETE_TASK_NOTIFIER.lower() == 'true'
+
+STOP_DUPLICATE = environ.get('STOP_DUPLICATE', '')
+STOP_DUPLICATE = STOP_DUPLICATE.lower() == 'true'
+
+IS_TEAM_DRIVE = environ.get('IS_TEAM_DRIVE', '')
+IS_TEAM_DRIVE = IS_TEAM_DRIVE.lower() == 'true'
+
+USE_SERVICE_ACCOUNTS = environ.get('USE_SERVICE_ACCOUNTS', '')
+USE_SERVICE_ACCOUNTS = USE_SERVICE_ACCOUNTS.lower() == 'true'
+
+WEB_PINCODE = environ.get('WEB_PINCODE', '')
+WEB_PINCODE = WEB_PINCODE.lower() == 'true'
+
+AS_DOCUMENT = environ.get('AS_DOCUMENT', '')
+AS_DOCUMENT = AS_DOCUMENT.lower() == 'true'
+
+USER_TD_MODE = environ.get('USER_TD_MODE', '')
+USER_TD_MODE = USER_TD_MODE.lower() == 'true'
+
+USER_TD_SA = environ.get('USER_TD_SA', '')
+USER_TD_SA = USER_TD_SA.lower() if len(USER_TD_SA) != 0 else ''
+
+SHOW_MEDIAINFO = environ.get('SHOW_MEDIAINFO', '')
+SHOW_MEDIAINFO = SHOW_MEDIAINFO.lower() == 'true'
+
+SOURCE_LINK = environ.get('SOURCE_LINK', '')
+SOURCE_LINK = SOURCE_LINK.lower() == 'true'
+
+DELETE_LINKS = environ.get('DELETE_LINKS', '')
+DELETE_LINKS = DELETE_LINKS.lower() == 'true'
+
+EQUAL_SPLITS = environ.get('EQUAL_SPLITS', '')
+EQUAL_SPLITS = EQUAL_SPLITS.lower() == 'true'
+
+MEDIA_GROUP = environ.get('MEDIA_GROUP', '')
+MEDIA_GROUP = MEDIA_GROUP.lower() == 'true'
+
+BASE_URL_PORT = environ.get('BASE_URL_PORT', '')
+BASE_URL_PORT = 80 if len(BASE_URL_PORT) == 0 else int(BASE_URL_PORT)
+
+BASE_URL = environ.get('BASE_URL', '').rstrip("/")
+if len(BASE_URL) == 0:
+    log_warning('BASE_URL not provided!')
+    BASE_URL = ''
+
+UPSTREAM_REPO = environ.get('UPSTREAM_REPO', '')
+if len(UPSTREAM_REPO) == 0:
+    UPSTREAM_REPO = ''
+
+UPSTREAM_BRANCH = environ.get('UPSTREAM_BRANCH', '')
+if len(UPSTREAM_BRANCH) == 0:
+    UPSTREAM_BRANCH = 'master'
+
+RCLONE_SERVE_URL = environ.get('RCLONE_SERVE_URL', '')
+if len(RCLONE_SERVE_URL) == 0:
+    RCLONE_SERVE_URL = ''
+
+RCLONE_SERVE_PORT = environ.get('RCLONE_SERVE_PORT', '')
+RCLONE_SERVE_PORT = 8080 if len(
+    RCLONE_SERVE_PORT) == 0 else int(RCLONE_SERVE_PORT)
+
+RCLONE_SERVE_USER = environ.get('RCLONE_SERVE_USER', '')
+if len(RCLONE_SERVE_USER) == 0:
+    RCLONE_SERVE_USER = ''
+
+RCLONE_SERVE_PASS = environ.get('RCLONE_SERVE_PASS', '')
+if len(RCLONE_SERVE_PASS) == 0:
+    RCLONE_SERVE_PASS = ''
+
+STORAGE_THRESHOLD = environ.get('STORAGE_THRESHOLD', '')
+STORAGE_THRESHOLD = '' if len(STORAGE_THRESHOLD) == 0 else float(STORAGE_THRESHOLD)
+
+TORRENT_LIMIT = environ.get('TORRENT_LIMIT', '')
+TORRENT_LIMIT = '' if len(TORRENT_LIMIT) == 0 else float(TORRENT_LIMIT)
+
+DIRECT_LIMIT = environ.get('DIRECT_LIMIT', '')
+DIRECT_LIMIT = '' if len(DIRECT_LIMIT) == 0 else float(DIRECT_LIMIT)
+
+YTDLP_LIMIT = environ.get('YTDLP_LIMIT', '')
+YTDLP_LIMIT = '' if len(YTDLP_LIMIT) == 0 else float(YTDLP_LIMIT)
+
+GDRIVE_LIMIT = environ.get('GDRIVE_LIMIT', '')
+GDRIVE_LIMIT = '' if len(GDRIVE_LIMIT) == 0 else float(GDRIVE_LIMIT)
+
+CLONE_LIMIT = environ.get('CLONE_LIMIT', '')
+CLONE_LIMIT = '' if len(CLONE_LIMIT) == 0 else float(CLONE_LIMIT)
+
+MEGA_LIMIT = environ.get('MEGA_LIMIT', '')
+MEGA_LIMIT = '' if len(MEGA_LIMIT) == 0 else float(MEGA_LIMIT)
+
+LEECH_LIMIT = environ.get('LEECH_LIMIT', '')
+LEECH_LIMIT = '' if len(LEECH_LIMIT) == 0 else float(LEECH_LIMIT)
+
+USER_MAX_TASKS = environ.get('USER_MAX_TASKS', '')
+USER_MAX_TASKS = int(USER_MAX_TASKS) if USER_MAX_TASKS.isdigit() else ''
+
+USER_TIME_INTERVAL = environ.get('USER_TIME_INTERVAL', '')
+USER_TIME_INTERVAL = int(USER_TIME_INTERVAL) if USER_TIME_INTERVAL.isdigit() else 0
+
+PLAYLIST_LIMIT = environ.get('PLAYLIST_LIMIT', '')
+PLAYLIST_LIMIT = '' if len(PLAYLIST_LIMIT) == 0 else int(PLAYLIST_LIMIT)
+
+FSUB_IDS = environ.get('FSUB_IDS', '')
+if len(FSUB_IDS) == 0:
+    FSUB_IDS = ''
+    
+LINKS_LOG_ID = environ.get('LINKS_LOG_ID', '')
+LINKS_LOG_ID = '' if len(LINKS_LOG_ID) == 0 else int(LINKS_LOG_ID)
+
+MIRROR_LOG_ID = environ.get('MIRROR_LOG_ID', '')
+if len(MIRROR_LOG_ID) == 0:
+    MIRROR_LOG_ID = ''
+    
+LEECH_LOG_ID = environ.get('LEECH_LOG_ID', '')
+if len(LEECH_LOG_ID) == 0:
+    LEECH_LOG_ID = ''
+    
+EXCEP_CHATS = environ.get('EXCEP_CHATS', '')
+if len(EXCEP_CHATS) == 0:
+    EXCEP_CHATS = ''
+
+BOT_PM = environ.get('BOT_PM', '')
+BOT_PM = BOT_PM.lower() == 'true'
+
+DAILY_TASK_LIMIT = environ.get('DAILY_TASK_LIMIT', '')
+DAILY_TASK_LIMIT = '' if len(DAILY_TASK_LIMIT) == 0 else int(DAILY_TASK_LIMIT)
+
+DAILY_MIRROR_LIMIT = environ.get('DAILY_MIRROR_LIMIT', '')
+DAILY_MIRROR_LIMIT = '' if len(
+    DAILY_MIRROR_LIMIT) == 0 else float(DAILY_MIRROR_LIMIT)
+
+DAILY_LEECH_LIMIT = environ.get('DAILY_LEECH_LIMIT', '')
+DAILY_LEECH_LIMIT = '' if len(
+    DAILY_LEECH_LIMIT) == 0 else float(DAILY_LEECH_LIMIT)
+
+DISABLE_DRIVE_LINK = environ.get('DISABLE_DRIVE_LINK', '')
+DISABLE_DRIVE_LINK = DISABLE_DRIVE_LINK.lower() == 'true'
+
+BOT_THEME = environ.get('BOT_THEME', '')
+if len(BOT_THEME) == 0:
+    BOT_THEME = 'minimal'
+
+IMAGES = environ.get('IMAGES', '')
+IMAGES = (IMAGES.replace("'", '').replace('"', '').replace(
+    '[', '').replace(']', '').replace(",", "")).split()
+if IMAGES:
+    STATUS_LIMIT = 2
+
+IMG_SEARCH = environ.get('IMG_SEARCH', '')
+IMG_SEARCH = (IMG_SEARCH.replace("'", '').replace('"', '').replace(
+    '[', '').replace(']', '').replace(",", "")).split()
+
+IMG_PAGE = environ.get('IMG_PAGE', '')
+IMG_PAGE = int(IMG_PAGE) if IMG_PAGE.isdigit() else ''
+
+AUTHOR_NAME = environ.get('AUTHOR_NAME', '')
+if len(AUTHOR_NAME) == 0:
+    AUTHOR_NAME = 'WZML-X'
+
+AUTHOR_URL = environ.get('AUTHOR_URL', '')
+if len(AUTHOR_URL) == 0:
+    AUTHOR_URL = 'https://t.me/WZML_X'
+
+TITLE_NAME = environ.get('TITLE_NAME', '')
+if len(TITLE_NAME) == 0:
+    TITLE_NAME = 'WZ-M/L-X'
+    
+COVER_IMAGE = environ.get('COVER_IMAGE', '')
+if len(COVER_IMAGE) == 0:
+    COVER_IMAGE = 'https://graph.org/file/60f9f8bcb97d27f76f5c0.jpg'
+
+GD_INFO = environ.get('GD_INFO', '')
+if len(GD_INFO) == 0:
+    GD_INFO = 'Uploaded by WZML-X'
+
+SAVE_MSG = environ.get('SAVE_MSG', '')
+SAVE_MSG = SAVE_MSG.lower() == 'true'
+
+SAFE_MODE = environ.get('SAFE_MODE', '')
+SAFE_MODE = SAFE_MODE.lower() == 'true'
+
+SET_COMMANDS = environ.get('SET_COMMANDS', '')
+SET_COMMANDS = SET_COMMANDS.lower() == 'true'
+
+CLEAN_LOG_MSG = environ.get('CLEAN_LOG_MSG', '')
+CLEAN_LOG_MSG = CLEAN_LOG_MSG.lower() == 'true'
+    
+SHOW_EXTRA_CMDS = environ.get('SHOW_EXTRA_CMDS', '')
+SHOW_EXTRA_CMDS = SHOW_EXTRA_CMDS.lower() == 'true'
+
+TOKEN_TIMEOUT = environ.get('TOKEN_TIMEOUT', '')
+TOKEN_TIMEOUT = int(TOKEN_TIMEOUT) if TOKEN_TIMEOUT.isdigit() else ''
+
+LOGIN_PASS = environ.get('LOGIN_PASS', '')
+if len(LOGIN_PASS) == 0:
+    LOGIN_PASS = None
+
+IMDB_TEMPLATE = environ.get('IMDB_TEMPLATE', '')
+if len(IMDB_TEMPLATE) == 0:
+    IMDB_TEMPLATE = '''<b>Title: </b> {title} [{year}]
+<b>Also Known As:</b> {aka}
+<b>Rating ⭐️:</b> <i>{rating}</i>
+<b>Release Info: </b> <a href="{url_releaseinfo}">{release_date}</a>
+<b>Genre: </b>{genres}
+<b>IMDb URL:</b> {url}
+<b>Language: </b>{languages}
+<b>Country of Origin : </b> {countries}
+
+<b>Story Line: </b><code>{plot}</code>
+
+<a href="{url_cast}">Read More ...</a>'''
+
+ANIME_TEMPLATE = environ.get('ANIME_TEMPLATE', '')
+if len(ANIME_TEMPLATE) == 0:
+    ANIME_TEMPLATE = '''<b>{ro_title}</b>({na_title})
 <b>Format</b>: <code>{format}</code>
 <b>Status</b>: <code>{status}</code>
 <b>Start Date</b>: <code>{startdate}</code>
@@ -227,541 +549,115 @@ if len(DEF_ANI_TEMP) == 0:
 
 <b>Description</b>: <i>{description}</i>'''
 
-LIST_ITEMS  = environ.get('LIST_ITEMS', '')
-if len(LIST_ITEMS) == 0:
-    LIST_ITEMS = 4
-else: LIST_ITEMS = int(LIST_ITEMS)
-
-DEF_IMDB_TEMP  = environ.get('IMDB_TEMPLATE', '')
-if len(DEF_IMDB_TEMP) == 0:
-    DEF_IMDB_TEMP = '''<b>Title: </b> {title} [{year}]
+MDL_TEMPLATE = environ.get('MDL_TEMPLATE', '')
+if len(MDL_TEMPLATE) == 0:
+    MDL_TEMPLATE = '''<b>Title:</b> {title}
 <b>Also Known As:</b> {aka}
 <b>Rating ⭐️:</b> <i>{rating}</i>
-<b>Release Info: </b> <a href="{url_releaseinfo}">{release_date}</a>
-<b>Genre: </b>{genres}
-<b>IMDb URL:</b> {url}
-<b>Language: </b>{languages}
-<b>Country of Origin : </b> {countries}
+<b>Release Info:</b> {aired_date}
+<b>Genre:</b> {genres}
+<b>MyDramaList URL:</b> {url}
+<b>Language:</b> #Korean
+<b>Country of Origin:</b> {country}
 
-<b>Story Line: </b><code>{plot}</code>
+<b>Story Line:</b> {synopsis}
 
-<a href="{url_cast}">Read More ...</a>'''
+<a href='{url}'>Read More ...</a>'''
 
-LOGGER.info("Generating SESSION_STRING")
-app = Client("hydrogram", api_id=(TELEGRAM_API), api_hash=TELEGRAM_HASH, bot_token=BOT_TOKEN, parse_mode=enums.ParseMode.HTML, no_updates=True)
-
-MEGA_API_KEY = environ.get('MEGA_API_KEY', '')
-if len(MEGA_API_KEY) == 0:
-    log_warning('MEGA API KEY not provided!')
-    MEGA_API_KEY = ''
-
-MEGA_EMAIL_ID = environ.get('MEGA_EMAIL_ID', '')
-MEGA_PASSWORD = environ.get('MEGA_PASSWORD', '')
-if len(MEGA_EMAIL_ID) == 0 or len(MEGA_PASSWORD) == 0:
-    log_warning('MEGA Credentials not provided!')
-    MEGA_EMAIL_ID = ''
-    MEGA_PASSWORD = ''
-
-tgBotMaxFileSize = 2097151000
-
-TG_SPLIT_SIZE = environ.get('TG_SPLIT_SIZE', '')
-if len(TG_SPLIT_SIZE) == 0 or int(TG_SPLIT_SIZE) > tgBotMaxFileSize:
-    TG_SPLIT_SIZE = tgBotMaxFileSize
-else:
-    TG_SPLIT_SIZE = int(TG_SPLIT_SIZE)
-
-try:
-    USER_SESSION_STRING = environ.get('USER_SESSION_STRING', '')
-    if len(USER_SESSION_STRING) != 0:
-        premium_session = Client("Premium", api_id=TELEGRAM_API, api_hash=TELEGRAM_HASH, session_string=USER_SESSION_STRING, parse_mode=enums.ParseMode.HTML, no_updates=True)
-    if not premium_session:
-        LOGGER.error("Cannot initialized User Session. Please regenerate USER_SESSION_STRING")
-    else:
-        premium_session.start()
-        if (premium_session.get_me()).is_premium:
-            if not LEECH_LOG:
-                LOGGER.error("You must set LEECH_LOG for uploads. Exiting Now...")
-                try: premium_session.send_message(OWNER_ID, "You must set LEECH_LOG for uploads, Exiting Now...")
-                except Exception as e: LOGGER.exception(e)
-                premium_session.stop()
-                app.stop()
-                exit(1)
-            TG_SPLIT_SIZE = 4194304000
-            LOGGER.info("Telegram Premium Detected! Leech Limit upgraded to 4GB")
-        elif (not DATABASE_URL) or (not RSS_CHAT_ID):
-            premium_session.stop()
-            LOGGER.info(f"Not using rss. if you want to use fill RSS_CHAT_ID and DATABASE_URL variables.")
-except:
-    USER_SESSION_STRING = ''
-    premium_session = ''
-LOGGER.info(f"TG_SPLIT_SIZE: {TG_SPLIT_SIZE}")
-
-STATUS_LIMIT = environ.get('STATUS_LIMIT', '')
-STATUS_LIMIT = '' if len(STATUS_LIMIT) == 0 else int(STATUS_LIMIT)
-
-UPTOBOX_TOKEN = environ.get('UPTOBOX_TOKEN', '')
-if len(UPTOBOX_TOKEN) == 0:
-    UPTOBOX_TOKEN = ''
-
-INDEX_URL = environ.get('INDEX_URL', '').rstrip("/")
-if len(INDEX_URL) == 0:
-    INDEX_URL = ''
-
-SEARCH_API_LINK = environ.get('SEARCH_API_LINK', '').rstrip("/")
-if len(SEARCH_API_LINK) == 0:
-    SEARCH_API_LINK = ''
-
-STATUS_UPDATE_INTERVAL = environ.get('STATUS_UPDATE_INTERVAL', '')
-if len(STATUS_UPDATE_INTERVAL) == 0:
-    STATUS_UPDATE_INTERVAL = 10
-else:
-    STATUS_UPDATE_INTERVAL = int(STATUS_UPDATE_INTERVAL)
-
-AUTO_DELETE_MESSAGE_DURATION = environ.get('AUTO_DELETE_MESSAGE_DURATION', '')
-if len(AUTO_DELETE_MESSAGE_DURATION) == 0:
-    AUTO_DELETE_MESSAGE_DURATION = 30
-else:
-    AUTO_DELETE_MESSAGE_DURATION = int(AUTO_DELETE_MESSAGE_DURATION)
-
-AUTO_DELETE_UPLOAD_MESSAGE_DURATION = environ.get('AUTO_DELETE_UPLOAD_MESSAGE_DURATION', '')
-if len(AUTO_DELETE_UPLOAD_MESSAGE_DURATION) == 0:
-    AUTO_DELETE_UPLOAD_MESSAGE_DURATION = -1
-else:
-    AUTO_DELETE_UPLOAD_MESSAGE_DURATION = int(AUTO_DELETE_UPLOAD_MESSAGE_DURATION)
-
-SEARCH_LIMIT = environ.get('SEARCH_LIMIT', '')
-SEARCH_LIMIT = 0 if len(SEARCH_LIMIT) == 0 else int(SEARCH_LIMIT)
-
-DAILY_TASK_LIMIT = environ.get('DAILY_TASK_LIMIT', '')
-DAILY_TASK_LIMIT = '' if len(DAILY_TASK_LIMIT) == 0 else int(DAILY_TASK_LIMIT)
-
-DAILY_MIRROR_LIMIT = environ.get('DAILY_MIRROR_LIMIT', '')
-DAILY_MIRROR_LIMIT = '' if len(DAILY_MIRROR_LIMIT) == 0 else int(DAILY_MIRROR_LIMIT)
-
-DAILY_LEECH_LIMIT = environ.get('DAILY_LEECH_LIMIT', '')
-DAILY_LEECH_LIMIT = '' if len(DAILY_LEECH_LIMIT) == 0 else int(DAILY_LEECH_LIMIT)
-
-CMD_SUFFIX = environ.get('CMD_SUFFIX', '')
-
-TORRENT_TIMEOUT = environ.get('TORRENT_TIMEOUT', '')
-TORRENT_TIMEOUT = '' if len(TORRENT_TIMEOUT) == 0 else int(TORRENT_TIMEOUT)
-
-TORRENT_DIRECT_LIMIT = environ.get('TORRENT_DIRECT_LIMIT', '')
-TORRENT_DIRECT_LIMIT = '' if len(TORRENT_DIRECT_LIMIT) == 0 else float(TORRENT_DIRECT_LIMIT)
-
-CLONE_LIMIT = environ.get('CLONE_LIMIT', '')
-CLONE_LIMIT = '' if len(CLONE_LIMIT) == 0 else float(CLONE_LIMIT)
-
-LEECH_LIMIT = environ.get('LEECH_LIMIT', '')
-LEECH_LIMIT = '' if len(LEECH_LIMIT) == 0 else float(LEECH_LIMIT)
-
-MEGA_LIMIT = environ.get('MEGA_LIMIT', '')
-MEGA_LIMIT = '' if len(MEGA_LIMIT) == 0 else float(MEGA_LIMIT)
-
-STORAGE_THRESHOLD = environ.get('STORAGE_THRESHOLD', '')
-STORAGE_THRESHOLD = '' if len(STORAGE_THRESHOLD) == 0 else float(STORAGE_THRESHOLD)
-
-ZIP_UNZIP_LIMIT = environ.get('ZIP_UNZIP_LIMIT', '')
-ZIP_UNZIP_LIMIT = '' if len(ZIP_UNZIP_LIMIT) == 0 else float(ZIP_UNZIP_LIMIT)
-
-TOTAL_TASKS_LIMIT = environ.get('TOTAL_TASKS_LIMIT', '')
-TOTAL_TASKS_LIMIT = '' if len(TOTAL_TASKS_LIMIT) == 0 else int(TOTAL_TASKS_LIMIT)
-
-USER_TASKS_LIMIT = environ.get('USER_TASKS_LIMIT', '')
-USER_TASKS_LIMIT = '' if len(USER_TASKS_LIMIT) == 0 else int(USER_TASKS_LIMIT)
-
-MAX_PLAYLIST = environ.get('MAX_PLAYLIST', '')
-MAX_PLAYLIST = '' if len(MAX_PLAYLIST) == 0 else int(MAX_PLAYLIST)
-
-YTDLP_LIMIT = environ.get('YTDLP_LIMIT', '')
-YTDLP_LIMIT = '' if len(YTDLP_LIMIT) == 0 else float(YTDLP_LIMIT)
-
-QUEUE_ALL = environ.get('QUEUE_ALL', '')
-QUEUE_ALL = '' if len(QUEUE_ALL) == 0 else int(QUEUE_ALL)
-
-QUEUE_DOWNLOAD = environ.get('QUEUE_DOWNLOAD', '')
-QUEUE_DOWNLOAD = '' if len(QUEUE_DOWNLOAD) == 0 else int(QUEUE_DOWNLOAD)
-
-QUEUE_UPLOAD = environ.get('QUEUE_UPLOAD', '')
-QUEUE_UPLOAD = '' if len(QUEUE_UPLOAD) == 0 else int(QUEUE_UPLOAD)
-
-RSS_USER_SESSION_STRING = environ.get('RSS_USER_SESSION_STRING', '')
-rss_session = Client("rss_session", api_id=(TELEGRAM_API), api_hash=TELEGRAM_HASH, session_string=RSS_USER_SESSION_STRING, parse_mode=enums.ParseMode.HTML, no_updates=True) if len(RSS_USER_SESSION_STRING) != 0 else None
-
-RSS_COMMAND = environ.get('RSS_COMMAND', '')
-if len(RSS_COMMAND) == 0:
-    RSS_COMMAND = ''
-
-RSS_CHAT_ID = environ.get('RSS_CHAT_ID', '')
-RSS_CHAT_ID = '' if len(RSS_CHAT_ID) == 0 else int(RSS_CHAT_ID)
-
-RSS_DELAY = environ.get('RSS_DELAY', '')
-RSS_DELAY = 900 if len(RSS_DELAY) == 0 else int(RSS_DELAY)
-
-SEARCH_PLUGINS = environ.get('SEARCH_PLUGINS', '')
-if len(SEARCH_PLUGINS) == 0:
-    SEARCH_PLUGINS = ''
-
-INCOMPLETE_TASK_NOTIFIER = environ.get('INCOMPLETE_TASK_NOTIFIER', '')
-INCOMPLETE_TASK_NOTIFIER = INCOMPLETE_TASK_NOTIFIER.lower() == 'true'
-
-STOP_DUPLICATE = environ.get('STOP_DUPLICATE', '')
-STOP_DUPLICATE = STOP_DUPLICATE.lower() == 'true'
-
-VIEW_LINK = environ.get('VIEW_LINK', '')
-VIEW_LINK = VIEW_LINK.lower() == 'true'
-
-SET_BOT_COMMANDS = environ.get('SET_BOT_COMMANDS', '')
-SET_BOT_COMMANDS = SET_BOT_COMMANDS.lower() == 'true'
-
-IS_TEAM_DRIVE = environ.get('IS_TEAM_DRIVE', '')
-IS_TEAM_DRIVE = IS_TEAM_DRIVE.lower() == 'true'
-
-ENABLE_USR_TD = environ.get('ENABLE_USR_TD', '')
-ENABLE_USR_TD = ENABLE_USR_TD.lower() == 'true'
-
-USE_SERVICE_ACCOUNTS = environ.get('USE_SERVICE_ACCOUNTS', '')
-USE_SERVICE_ACCOUNTS = USE_SERVICE_ACCOUNTS.lower() == 'true'
-
-WEB_PINCODE = environ.get('WEB_PINCODE', '')
-WEB_PINCODE = WEB_PINCODE.lower() == 'true'
-
-IGNORE_PENDING_REQUESTS = environ.get('IGNORE_PENDING_REQUESTS', '')
-IGNORE_PENDING_REQUESTS = IGNORE_PENDING_REQUESTS.lower() == 'true'
-
-AS_DOCUMENT = environ.get('AS_DOCUMENT', '')
-AS_DOCUMENT = AS_DOCUMENT.lower() == 'true'
-
-EQUAL_SPLITS = environ.get('EQUAL_SPLITS', '')
-EQUAL_SPLITS = EQUAL_SPLITS.lower() == 'true'
-
-MIRROR_ENABLED = environ.get('MIRROR_ENABLED', '')
-MIRROR_ENABLED = MIRROR_ENABLED.lower() == 'true'
-
-QB_MIRROR_ENABLED = environ.get('QB_MIRROR_ENABLED', '')
-QB_MIRROR_ENABLED = QB_MIRROR_ENABLED.lower() == 'true'
-
-LEECH_ENABLED = environ.get('LEECH_ENABLED', '')
-LEECH_ENABLED = LEECH_ENABLED.lower() == 'true'
-
-WATCH_ENABLED = environ.get('WATCH_ENABLED', '')
-WATCH_ENABLED = WATCH_ENABLED.lower() == 'true'
-
-CLONE_ENABLED = environ.get('CLONE_ENABLED', '')
-CLONE_ENABLED = CLONE_ENABLED.lower() == 'true'
-
-ANILIST_ENABLED = environ.get('ANILIST_ENABLED', '')
-ANILIST_ENABLED = ANILIST_ENABLED.lower() == 'true'
-
-IMDB_ENABLED = environ.get('IMDB_ENABLED', '')
-IMDB_ENABLED = IMDB_ENABLED.lower() == 'true'
-
-WAYBACK_ENABLED = environ.get('WAYBACK_ENABLED', '')
-WAYBACK_ENABLED = WAYBACK_ENABLED.lower() == 'true'
-
-MEDIAINFO_ENABLED = environ.get('MEDIAINFO_ENABLED', '')
-MEDIAINFO_ENABLED = MEDIAINFO_ENABLED.lower() == 'true'
-
-LIST_MODE = environ.get('LIST_MODE', '')
-if len(LIST_MODE) == 0:
-    LIST_MODE = "Telegraph"
-
-EMOJI_THEME = environ.get('EMOJI_THEME', '')
-EMOJI_THEME = EMOJI_THEME.lower() == 'true'
-
-DISABLE_DRIVE_LINK = environ.get('DISABLE_DRIVE_LINK', '')
-DISABLE_DRIVE_LINK = DISABLE_DRIVE_LINK.lower() == 'true'
-
-LEECH_LOG_INDEXING = environ.get('LEECH_LOG_INDEXING', '')
-LEECH_LOG_INDEXING = LEECH_LOG_INDEXING.lower() == 'true'
-
-BOT_PM = environ.get('BOT_PM', '')
-BOT_PM = BOT_PM.lower() == 'true'
-
-FORCE_BOT_PM = environ.get('FORCE_BOT_PM', '')
-FORCE_BOT_PM = FORCE_BOT_PM.lower() == 'true'
-
-SOURCE_LINK = environ.get('SOURCE_LINK', '')
-SOURCE_LINK = SOURCE_LINK.lower() == 'true'
-
-SAME_ACC_COOKIES = environ.get('SAME_ACC_COOKIES', '')
-SAME_ACC_COOKIES = SAME_ACC_COOKIES.lower() == 'true'
-
-FSUB_IDS = environ.get('FSUB_IDS', '')
-if len(FSUB_IDS) == 0:
-    FSUB_IDS = ''
-
-PAID_SERVICE = environ.get('PAID_SERVICE', '')
-PAID_SERVICE = PAID_SERVICE.lower() == 'true'
-
-SHOW_LIMITS_IN_STATS = environ.get('SHOW_LIMITS_IN_STATS', '')
-SHOW_LIMITS_IN_STATS = SHOW_LIMITS_IN_STATS.lower() == 'true'
-
-START_BTN1_NAME = environ.get('START_BTN1_NAME', '')
-START_BTN1_URL = environ.get('START_BTN1_URL', '')
-if len(START_BTN1_NAME) == 0 or len(START_BTN1_URL) == 0:
-    START_BTN1_NAME = 'Master'
-    START_BTN1_URL = 'https://t.me/BalaPriyanB'
-
-START_BTN2_NAME = environ.get('START_BTN2_NAME', '')
-START_BTN2_URL = environ.get('START_BTN2_URL', '')
-if len(START_BTN2_NAME) == 0 or len(START_BTN2_URL) == 0:
-    START_BTN2_NAME = 'Support Group'
-    START_BTN2_URL = 'https://t.me/BalaPriyanBots'
-
-BUTTON_FOUR_NAME = environ.get('BUTTON_FOUR_NAME', '')
-BUTTON_FOUR_URL = environ.get('BUTTON_FOUR_URL', '')
-if len(BUTTON_FOUR_NAME) == 0 or len(BUTTON_FOUR_URL) == 0:
-    BUTTON_FOUR_NAME = ''
-    BUTTON_FOUR_URL = ''
-
-BUTTON_FIVE_NAME = environ.get('BUTTON_FIVE_NAME', '')
-BUTTON_FIVE_URL = environ.get('BUTTON_FIVE_URL', '')
-if len(BUTTON_FIVE_NAME) == 0 or len(BUTTON_FIVE_URL) == 0:
-    BUTTON_FIVE_NAME = ''
-    BUTTON_FIVE_URL = ''
-
-BUTTON_SIX_NAME = environ.get('BUTTON_SIX_NAME', '')
-BUTTON_SIX_URL = environ.get('BUTTON_SIX_URL', '')
-if len(BUTTON_SIX_NAME) == 0 or len(BUTTON_SIX_URL) == 0:
-    BUTTON_SIX_NAME = ''
-    BUTTON_SIX_URL = ''
-
-SHORTENER = environ.get('SHORTENER', '')
-SHORTENER_API = environ.get('SHORTENER_API', '')
-if len(SHORTENER) == 0 or len(SHORTENER_API) == 0:
-    SHORTENER = ''
-    SHORTENER_API = ''
-SHORTENER = (SHORTENER.replace("'", '').replace('"', '').replace('[', '').replace(']', '').replace(",", "")).split()
-SHORTENER_API = (SHORTENER_API.replace("'", '').replace('"', '').replace('[', '').replace(']', '').replace(",", "")).split()
-
-
-GDTOT_CRYPT = environ.get('GDTOT_CRYPT', '')
-if len(GDTOT_CRYPT) == 0:
-    GDTOT_CRYPT = ''
-
-HUBDRIVE_CRYPT = environ.get('HUBDRIVE_CRYPT', '')
-if len(HUBDRIVE_CRYPT) == 0:
-    HUBDRIVE_CRYPT = ''
-
-KATDRIVE_CRYPT = environ.get('KATDRIVE_CRYPT', '')
-if len(KATDRIVE_CRYPT) == 0:
-    KATDRIVE_CRYPT = ''
-    
-KOLOP_CRYPT = environ.get('KOLOP_CRYPT', '')
-if len(KOLOP_CRYPT) == 0:
-    KOLOP_CRYPT = ''
-
-DRIVEFIRE_CRYPT = environ.get('DRIVEFIRE_CRYPT', '')
-if len(DRIVEFIRE_CRYPT) == 0:
-    DRIVEFIRE_CRYPT = ''
-
-SHAREDRIVE_PHPCKS = environ.get('SHAREDRIVE_PHPCKS', '')
-if len(SHAREDRIVE_PHPCKS) == 0:
-    SHAREDRIVE_PHPCKS = ''
-
-XSRF_TOKEN = environ.get('XSRF_TOKEN', '')
-if len(XSRF_TOKEN) == 0:
-    XSRF_TOKEN = ''
-
-laravel_session = environ.get('laravel_session', '')
-if len(laravel_session) == 0:
-    laravel_session = ''
-
-MIRROR_LOG_URL = environ.get('MIRROR_LOG_URL', '')
-if len(MIRROR_LOG_URL) == 0:
-    MIRROR_LOG_URL = ''
-
-LEECH_LOG_URL = environ.get('LEECH_LOG_URL', '')
-if len(LEECH_LOG_URL) == 0:
-    LEECH_LOG_URL = ''
-
-TIME_GAP = environ.get('TIME_GAP', '')
-if len(TIME_GAP) == 0:
-    TIME_GAP = -1
-else:
-    TIME_GAP = int(TIME_GAP)
-
-AUTHOR_NAME = environ.get('AUTHOR_NAME', '')
-if len(AUTHOR_NAME) == 0:
-    AUTHOR_NAME = 'WZML'
-
-AUTHOR_URL = environ.get('AUTHOR_URL', '')
-if len(AUTHOR_URL) == 0:
-    AUTHOR_URL = 'https://t.me/WeebZone_updates'
-
-TITLE_NAME = environ.get('TITLE_NAME', '')
-if len(TITLE_NAME) == 0:
-    TITLE_NAME = 'WeebZone'
-
-GD_INFO = environ.get('GD_INFO', '')
-if len(GD_INFO) == 0:
-    GD_INFO = 'Uploaded by WeebZone Mirror Bot'
-
-CREDIT_NAME = environ.get('CREDIT_NAME', '')
-if len(CREDIT_NAME) == 0:
-    CREDIT_NAME = 'WeebZone'
-
-NAME_FONT = environ.get('NAME_FONT', '')
-if len(NAME_FONT) == 0:
-    NAME_FONT = 'code'
-
-CAPTION_FONT = environ.get('CAPTION_FONT', '')
-if len(CAPTION_FONT) == 0:
-    CAPTION_FONT = 'code'
-
-FINISHED_PROGRESS_STR = environ.get('FINISHED_PROGRESS_STR', '')
-UN_FINISHED_PROGRESS_STR = environ.get('UN_FINISHED_PROGRESS_STR', '')
-MULTI_WORKING_PROGRESS_STR = environ.get('MULTI_WORKING_PROGRESS_STR', '')
-if len(FINISHED_PROGRESS_STR) == 0 or len(FINISHED_PROGRESS_STR) == 0 or len(MULTI_WORKING_PROGRESS_STR) == 0:
-    FINISHED_PROGRESS_STR = '■'
-    UN_FINISHED_PROGRESS_STR = '□'
-    MULTI_WORKING_PROGRESS_STR = '▁ ▂ ▃ ▄ ▅ ▆ ▇'
-MULTI_WORKING_PROGRESS_STR = (MULTI_WORKING_PROGRESS_STR.replace("'", '').replace('"', '').replace('[', '').replace(']', '').replace(",", "")).split(' ')
-
-if len(MULTI_WORKING_PROGRESS_STR) != 7:
-    LOGGER.warning("Multi Progress doesn't contain 7 Symbols. Check Agian, Using Default for Now !")
-    MULTI_WORKING_PROGRESS_STR = '▁ ▂ ▃ ▄ ▅ ▆ ▇'.split(' ')
-
-IMAGE_URL = environ.get('IMAGE_URL', '')
-if len(IMAGE_URL) == 0:
-    IMAGE_URL = 'https://graph.org/file/c4cf01cec801c205bc727.jpg'
-
-TIMEZONE = environ.get('TIMEZONE', '')
-if len(TIMEZONE) == 0:
-    TIMEZONE = 'Asia/Kolkata'
-
-PIXABAY_API_KEY = environ.get('PIXABAY_API_KEY', '')
-if len(PIXABAY_API_KEY) == 0:
-    PIXABAY_API_KEY = ''
-
-PIXABAY_CATEGORY = environ.get('PIXABAY_CATEGORY', '')
-if len(PIXABAY_CATEGORY) == 0:
-    PIXABAY_CATEGORY = ''
-
-PIXABAY_SEARCH = environ.get('PIXABAY_SEARCH', '')
-if len(PIXABAY_SEARCH) == 0:
-    PIXABAY_SEARCH = ''
-
-WALLFLARE_SEARCH = environ.get('WALLFLARE_SEARCH', '')
-if len(WALLFLARE_SEARCH) == 0:
-    WALLFLARE_SEARCH = ''
-
-WALLTIP_SEARCH = environ.get('WALLTIP_SEARCH', '')
-if len(WALLTIP_SEARCH) == 0:
-    WALLTIP_SEARCH = ''
-
-WALLCRAFT_CATEGORY = environ.get('WALLCRAFT_CATEGORY', '')
-if len(WALLCRAFT_CATEGORY) == 0:
-    WALLCRAFT_CATEGORY = ''
-
-PICS = environ.get('PICS', '')
-PICS = (PICS.replace("'", '').replace('"', '').replace('[', '').replace(']', '').replace(",", "")).split()
-
-PORT = environ.get('PORT', None)
-
-YT_DLP_QUALITY = environ.get('YT_DLP_QUALITY', '')
-if len(YT_DLP_QUALITY) == 0:
-    YT_DLP_QUALITY = ''
-
-BASE_URL = environ.get('BASE_URL', '').rstrip("/")
-if len(BASE_URL) == 0:
-    log_warning('BASE_URL not provided!')
-    BASE_URL = ''
-
-UPSTREAM_REPO = environ.get('UPSTREAM_REPO', '')
-if len(UPSTREAM_REPO) == 0:
-   UPSTREAM_REPO = 'https://github.com/BalaPriyanB/NeonSpectre'
-
-UPSTREAM_BRANCH = environ.get('UPSTREAM_BRANCH', '')
-if len(UPSTREAM_BRANCH) == 0:
-    UPSTREAM_BRANCH = 'master'
-
-UPDATE_PACKAGES = environ.get('UPDATE_PACKAGES', '')
-if len(UPDATE_PACKAGES) == 0:
-    UPDATE_PACKAGES = 'False'
-
-
-config_dict = {'ANILIST_ENABLED': ANILIST_ENABLED,
+config_dict = {'ANIME_TEMPLATE': ANIME_TEMPLATE,
                'AS_DOCUMENT': AS_DOCUMENT,
                'AUTHORIZED_CHATS': AUTHORIZED_CHATS,
+               'AUTO_DELETE_MESSAGE_DURATION': AUTO_DELETE_MESSAGE_DURATION,
+               'BASE_URL': BASE_URL,
+               'BASE_URL_PORT': BASE_URL_PORT,
+               'BLACKLIST_USERS': BLACKLIST_USERS,
+               'BOT_TOKEN': BOT_TOKEN,
+               'BOT_MAX_TASKS': BOT_MAX_TASKS,
+               'CAP_FONT': CAP_FONT,
+               'CMD_SUFFIX': CMD_SUFFIX,
+               'DATABASE_URL': DATABASE_URL,
+               'DEBRID_API_KEY': DEBRID_API_KEY,
+               'DELETE_LINKS': DELETE_LINKS,
+               'DEFAULT_UPLOAD': DEFAULT_UPLOAD,
+               'DOWNLOAD_DIR': DOWNLOAD_DIR,
+               'STORAGE_THRESHOLD': STORAGE_THRESHOLD,
+               'TORRENT_LIMIT': TORRENT_LIMIT,
+               'DIRECT_LIMIT': DIRECT_LIMIT,
+               'YTDLP_LIMIT': YTDLP_LIMIT,
+               'GDRIVE_LIMIT': GDRIVE_LIMIT,
+               'CLONE_LIMIT': CLONE_LIMIT,
+               'MEGA_LIMIT': MEGA_LIMIT,
+               'LEECH_LIMIT': LEECH_LIMIT,
+               'FSUB_IDS': FSUB_IDS,
+               'USER_MAX_TASKS': USER_MAX_TASKS,
+               'USER_TIME_INTERVAL': USER_TIME_INTERVAL,
+               'PLAYLIST_LIMIT': PLAYLIST_LIMIT,
+               'DAILY_TASK_LIMIT': DAILY_TASK_LIMIT,
+               'DAILY_MIRROR_LIMIT': DAILY_MIRROR_LIMIT,
+               'DAILY_LEECH_LIMIT': DAILY_LEECH_LIMIT,
+               'MIRROR_LOG_ID': MIRROR_LOG_ID,
+               'LEECH_LOG_ID': LEECH_LOG_ID,
+               'LINKS_LOG_ID': LINKS_LOG_ID,
+               'EXCEP_CHATS': EXCEP_CHATS,
+               'BOT_PM': BOT_PM,
+               'DISABLE_DRIVE_LINK': DISABLE_DRIVE_LINK,
+               'BOT_THEME': BOT_THEME,
+               'IMAGES': IMAGES,
+               'IMG_SEARCH': IMG_SEARCH,
+               'IMG_PAGE': IMG_PAGE,
+               'IMDB_TEMPLATE': IMDB_TEMPLATE,
                'AUTHOR_NAME': AUTHOR_NAME,
                'AUTHOR_URL': AUTHOR_URL,
-               'AUTO_DELETE_MESSAGE_DURATION': AUTO_DELETE_MESSAGE_DURATION,
-               'AUTO_DELETE_UPLOAD_MESSAGE_DURATION': AUTO_DELETE_UPLOAD_MESSAGE_DURATION,
-               'BASE_URL': BASE_URL,
-               'BOT_TOKEN': BOT_TOKEN,
-               'BOT_PM': BOT_PM,
-               'BUTTON_FOUR_NAME': BUTTON_FOUR_NAME,
-               'BUTTON_FOUR_URL': BUTTON_FOUR_URL,
-               'BUTTON_FIVE_NAME': BUTTON_FIVE_NAME,
-               'BUTTON_FIVE_URL': BUTTON_FIVE_URL,
-               'BUTTON_SIX_NAME': BUTTON_SIX_NAME,
-               'BUTTON_SIX_URL': BUTTON_SIX_URL,
-               'CAPTION_FONT': CAPTION_FONT,
-               'CREDIT_NAME': CREDIT_NAME,
-               'CLONE_ENABLED': CLONE_ENABLED,
-               'CLONE_LIMIT': CLONE_LIMIT,
-               'CMD_SUFFIX': CMD_SUFFIX,
-               'DRIVEFIRE_CRYPT': DRIVEFIRE_CRYPT,
-               'DOWNLOAD_DIR': DOWNLOAD_DIR,
-               'DATABASE_URL': DATABASE_URL,
-               'ENABLE_USR_TD': ENABLE_USR_TD,
-               'IMDB_TEMPLATE': DEF_IMDB_TEMP,
-               'ANIME_TEMPLATE': DEF_ANI_TEMP,  
-               'DISABLE_DRIVE_LINK': DISABLE_DRIVE_LINK,
-               'OWNER_ID': OWNER_ID,
+               'COVER_IMAGE': COVER_IMAGE,
+               'TITLE_NAME': TITLE_NAME,
+               'TIMEZONE': TIMEZONE,
+               'GD_INFO': GD_INFO,
+               'GDTOT_CRYPT': GDTOT_CRYPT,
                'EQUAL_SPLITS': EQUAL_SPLITS,
                'EXTENSION_FILTER': EXTENSION_FILTER,
-               'EMOJI_THEME': EMOJI_THEME,
-               'GDRIVE_ID': GDRIVE_ID,               
-               'IGNORE_PENDING_REQUESTS': IGNORE_PENDING_REQUESTS,
+               'GDRIVE_ID': GDRIVE_ID,
                'INCOMPLETE_TASK_NOTIFIER': INCOMPLETE_TASK_NOTIFIER,
                'INDEX_URL': INDEX_URL,
                'IS_TEAM_DRIVE': IS_TEAM_DRIVE,
-               'TG_SPLIT_SIZE': TG_SPLIT_SIZE,
-               'MEGA_API_KEY': MEGA_API_KEY,
-               'MEGA_EMAIL_ID': MEGA_EMAIL_ID,
+               'LEECH_FILENAME_PREFIX': LEECH_FILENAME_PREFIX,
+               'LEECH_FILENAME_SUFFIX': LEECH_FILENAME_SUFFIX,
+               'LEECH_FILENAME_CAPTION': LEECH_FILENAME_CAPTION,
+               'LEECH_FILENAME_REMNAME': LEECH_FILENAME_REMNAME,
+               'MIRROR_FILENAME_PREFIX': MIRROR_FILENAME_PREFIX,
+               'MIRROR_FILENAME_SUFFIX': MIRROR_FILENAME_SUFFIX,
+               'MIRROR_FILENAME_REMNAME': MIRROR_FILENAME_REMNAME,
+               'LEECH_SPLIT_SIZE': LEECH_SPLIT_SIZE,
+               'LOGIN_PASS': LOGIN_PASS,
+               'TOKEN_TIMEOUT': TOKEN_TIMEOUT,
+               'MDL_TEMPLATE': MDL_TEMPLATE,
+               'MEDIA_GROUP': MEDIA_GROUP,
+               'MEGA_EMAIL': MEGA_EMAIL,
                'MEGA_PASSWORD': MEGA_PASSWORD,
-               'USER_SESSION_STRING': USER_SESSION_STRING,
-               'RSS_CHAT_ID': RSS_CHAT_ID,
-               'RSS_COMMAND': RSS_COMMAND,
-               'RSS_DELAY': RSS_DELAY,
-               'LEECH_ENABLED': LEECH_ENABLED,
-               'MIRROR_ENABLED': MIRROR_ENABLED,
-               'QB_MIRROR_ENABLED': QB_MIRROR_ENABLED,
+               'OWNER_ID': OWNER_ID,
                'QUEUE_ALL': QUEUE_ALL,
                'QUEUE_DOWNLOAD': QUEUE_DOWNLOAD,
                'QUEUE_UPLOAD': QUEUE_UPLOAD,
-               'WATCH_ENABLED': WATCH_ENABLED,
-               'WAYBACK_ENABLED': WAYBACK_ENABLED,
-               'MEDIAINFO_ENABLED': MEDIAINFO_ENABLED,
-               'SET_BOT_COMMANDS': SET_BOT_COMMANDS,
-               'FORCE_BOT_PM': FORCE_BOT_PM,
-               'LEECH_LOG': LEECH_LOG,
-               'LEECH_LOG_URL': LEECH_LOG_URL,
-               'LEECH_LOG_INDEXING': LEECH_LOG_INDEXING,
-               'PAID_SERVICE': PAID_SERVICE,
-               'MIRROR_LOGS': MIRROR_LOGS,
-               'MIRROR_LOG_URL': MIRROR_LOG_URL,
-               'LINK_LOGS': LINK_LOGS,
-               'TIMEZONE': TIMEZONE,
-               'TGH_THUMB': TGH_THUMB,
-               'TITLE_NAME': TITLE_NAME,
-               'GD_INFO': GD_INFO,
-               'FSUB_IDS': FSUB_IDS,
-               'SA_MAIL': SA_MAIL,
-               'SHORTENER': SHORTENER,
-               'SHORTENER_API': SHORTENER_API,
+               'RCLONE_FLAGS': RCLONE_FLAGS,
+               'RCLONE_PATH': RCLONE_PATH,
+               'RCLONE_SERVE_URL': RCLONE_SERVE_URL,
+               'RCLONE_SERVE_USER': RCLONE_SERVE_USER,
+               'RCLONE_SERVE_PASS': RCLONE_SERVE_PASS,
+               'RCLONE_SERVE_PORT': RCLONE_SERVE_PORT,
+               'RSS_CHAT_ID': RSS_CHAT_ID,
+               'RSS_DELAY': RSS_DELAY,
+               'SAVE_MSG': SAVE_MSG,
+               'SAFE_MODE': SAFE_MODE,
                'SEARCH_API_LINK': SEARCH_API_LINK,
                'SEARCH_LIMIT': SEARCH_LIMIT,
                'SEARCH_PLUGINS': SEARCH_PLUGINS,
-               'PORT': PORT,
+               'SET_COMMANDS': SET_COMMANDS,
+               'SHOW_MEDIAINFO': SHOW_MEDIAINFO,
+               'CLEAN_LOG_MSG': CLEAN_LOG_MSG,
+               'SHOW_EXTRA_CMDS': SHOW_EXTRA_CMDS,
+               'SOURCE_LINK': SOURCE_LINK,
                'STATUS_LIMIT': STATUS_LIMIT,
                'STATUS_UPDATE_INTERVAL': STATUS_UPDATE_INTERVAL,
                'STOP_DUPLICATE': STOP_DUPLICATE,
-               'SAVE_MSG': SAVE_MSG,
-               'SAME_ACC_COOKIES': SAME_ACC_COOKIES,
                'SUDO_USERS': SUDO_USERS,
                'TELEGRAM_API': TELEGRAM_API,
                'TELEGRAM_HASH': TELEGRAM_HASH,
@@ -769,98 +665,68 @@ config_dict = {'ANILIST_ENABLED': ANILIST_ENABLED,
                'UPSTREAM_REPO': UPSTREAM_REPO,
                'UPSTREAM_BRANCH': UPSTREAM_BRANCH,
                'UPTOBOX_TOKEN': UPTOBOX_TOKEN,
-               'USE_SERVICE_ACCOUNTS': USE_SERVICE_ACCOUNTS,               
-               'VIEW_LINK': VIEW_LINK,
-               'GDTOT_CRYPT': GDTOT_CRYPT,
-               'HUBDRIVE_CRYPT': HUBDRIVE_CRYPT,
-               'KATDRIVE_CRYPT': KATDRIVE_CRYPT,
-               'KOLOP_CRYPT': KOLOP_CRYPT,
-               'SHAREDRIVE_PHPCKS': SHAREDRIVE_PHPCKS,
-               'XSRF_TOKEN': XSRF_TOKEN,
-               'laravel_session': laravel_session,
-               'TOTAL_TASKS_LIMIT': TOTAL_TASKS_LIMIT,
-               'USER_TASKS_LIMIT': USER_TASKS_LIMIT,
-               'STORAGE_THRESHOLD': STORAGE_THRESHOLD,
-               'TORRENT_DIRECT_LIMIT': TORRENT_DIRECT_LIMIT,
-               'ZIP_UNZIP_LIMIT': ZIP_UNZIP_LIMIT,
-               'LEECH_LIMIT': LEECH_LIMIT,
-               'MEGA_LIMIT': MEGA_LIMIT,
-               'DAILY_TASK_LIMIT': DAILY_TASK_LIMIT,
-               'DAILY_MIRROR_LIMIT': DAILY_MIRROR_LIMIT,
-               'DAILY_LEECH_LIMIT': DAILY_LEECH_LIMIT,
-               'TIME_GAP': TIME_GAP,
-               'FINISHED_PROGRESS_STR': FINISHED_PROGRESS_STR,
-               'UN_FINISHED_PROGRESS_STR': UN_FINISHED_PROGRESS_STR,
-               'MULTI_WORKING_PROGRESS_STR': MULTI_WORKING_PROGRESS_STR,
-               'SHOW_LIMITS_IN_STATS': SHOW_LIMITS_IN_STATS,
-               'LIST_MODE': LIST_MODE,
-               'WALLFLARE_SEARCH': WALLFLARE_SEARCH,
-               'WALLTIP_SEARCH': WALLTIP_SEARCH,
-               'WALLCRAFT_CATEGORY': WALLCRAFT_CATEGORY,
-               'PIXABAY_API_KEY': PIXABAY_API_KEY,
-               'PIXABAY_CATEGORY': PIXABAY_CATEGORY,
-               'PIXABAY_SEARCH': PIXABAY_SEARCH,
-               'PICS': PICS,
-               'NAME_FONT': NAME_FONT,
-               'UPDATE_PACKAGES': UPDATE_PACKAGES,
-               'SOURCE_LINK': SOURCE_LINK,
-               'START_BTN1_NAME': START_BTN1_NAME,
-               'START_BTN1_URL': START_BTN1_URL,
-               'START_BTN2_NAME': START_BTN2_NAME,
-               'START_BTN2_URL': START_BTN2_URL,
+               'USER_SESSION_STRING': USER_SESSION_STRING,
+               'USER_TD_MODE':USER_TD_MODE,
+               'USER_TD_SA': USER_TD_SA,
+               'USE_SERVICE_ACCOUNTS': USE_SERVICE_ACCOUNTS,
                'WEB_PINCODE': WEB_PINCODE,
-               'YTDLP_LIMIT': YTDLP_LIMIT,
-               'MAX_PLAYLIST': MAX_PLAYLIST,
-               'YT_DLP_QUALITY': YT_DLP_QUALITY}
+               'YT_DLP_OPTIONS': YT_DLP_OPTIONS}
 
 if GDRIVE_ID:
-    DRIVES_NAMES.append("Main")
-    DRIVES_IDS.append(GDRIVE_ID)
-    INDEX_URLS.append(INDEX_URL)
+    list_drives_dict['Main'] = {"drive_id": GDRIVE_ID, "index_link": INDEX_URL}
+    categories_dict['Root'] = {"drive_id": GDRIVE_ID, "index_link": INDEX_URL}
 
 if ospath.exists('list_drives.txt'):
     with open('list_drives.txt', 'r+') as f:
         lines = f.readlines()
         for line in lines:
-            temp = line.strip().split()
-            DRIVES_IDS.append(temp[1])
-            DRIVES_NAMES.append(temp[0].replace("_", " "))
-            if len(temp) > 2:
-                INDEX_URLS.append(temp[2])
-            else:
-                INDEX_URLS.append('')
-
-if GDRIVE_ID:
-    CATEGORY_NAMES.append("Root")
-    CATEGORY_IDS.append(GDRIVE_ID)
-    CATEGORY_INDEX.append(INDEX_URL)
+            sep = 2 if line.strip().split()[-1].startswith('http') else 1
+            temp = line.strip().rsplit(maxsplit=sep)
+            name = "Main Custom" if temp[0].casefold() == "Main" else temp[0]
+            list_drives_dict[name] = {'drive_id': temp[1], 'index_link': (temp[2] if sep == 2 else '')}
 
 if ospath.exists('categories.txt'):
     with open('categories.txt', 'r+') as f:
         lines = f.readlines()
         for line in lines:
+            sep = 2 if line.strip().split()[-1].startswith('http') else 1
+            temp = line.strip().rsplit(maxsplit=sep)
+            name = "Root Custom" if temp[0].casefold() == "Root" else temp[0]
+            categories_dict[name] = {'drive_id': temp[1], 'index_link': (temp[2] if sep == 2 else '')}
+
+if ospath.exists('buttons.txt'):
+    with open('buttons.txt', 'r+') as f:
+        lines = f.readlines()
+        for line in lines:
+            temp = line.strip().rsplit(maxsplit=1)
+            if len(extra_buttons.keys()) >= 20:
+                break
+            elif temp[1].startswith('http'):
+                extra_buttons[temp[0]] = temp[1]
+
+if ospath.exists('shorteners.txt'):
+    with open('shorteners.txt', 'r+') as f:
+        lines = f.readlines()
+        for line in lines:
             temp = line.strip().split()
-            CATEGORY_IDS.append(temp[1])
-            CATEGORY_NAMES.append(temp[0].replace("_", " "))
-            if len(temp) > 2:
-                CATEGORY_INDEX.append(temp[2])
-            else:
-                CATEGORY_INDEX.append('')
+            if len(temp) == 2:
+                shorteners_list.append({'domain': temp[0],'api_key': temp[1]})
 
 if BASE_URL:
-    Popen(f"gunicorn web.wserver:app --bind 0.0.0.0:{PORT} --keep-alive 5", shell=True)
+    Popen(f"gunicorn web.wserver:app --bind 0.0.0.0:{BASE_URL_PORT} --worker-class gevent", shell=True)
 
-srun(["qbittorrent-nox", "-d", "--profile=."])
+srun(["qbittorrent-nox", "-d", f"--profile={getcwd()}"])
 if not ospath.exists('.netrc'):
-    srun(["touch", ".netrc"])
-srun(["cp", ".netrc", "/root/.netrc"])
+    with open('.netrc', 'w'):
+        pass
 srun(["chmod", "600", ".netrc"])
+srun(["cp", ".netrc", "/root/.netrc"])
 srun(["chmod", "+x", "aria.sh"])
 srun("./aria.sh", shell=True)
 if ospath.exists('accounts.zip'):
     if ospath.exists('accounts'):
         srun(["rm", "-rf", "accounts"])
-    srun(["unzip", "-q", "-o", "accounts.zip", "-x", "accounts/emails.txt"])
+    srun(["7z", "x", "-o.", "-aoa", "accounts.zip", "accounts/*.json"])
     srun(["chmod", "-R", "777", "accounts"])
     osremove('accounts.zip')
 if not ospath.exists('accounts'):
@@ -869,8 +735,10 @@ sleep(0.5)
 
 aria2 = ariaAPI(ariaClient(host="http://localhost", port=6800, secret=""))
 
+
 def get_client():
     return qbClient(host="localhost", port=8090, VERIFY_WEBUI_CERTIFICATE=False, REQUESTS_ARGS={'timeout': (30, 60)})
+
 
 def aria2c_init():
     try:
@@ -880,10 +748,12 @@ def aria2c_init():
         aria2.add_uris([link], {'dir': dire})
         sleep(3)
         downloads = aria2.get_downloads()
-        sleep(15)
+        sleep(10)
         aria2.remove(downloads, force=True, files=True, clean=True)
     except Exception as e:
         log_error(f"Aria2c initializing error: {e}")
+
+
 Thread(target=aria2c_init).start()
 sleep(1.5)
 
@@ -893,12 +763,9 @@ aria2c_global = ['bt-max-open-files', 'download-result', 'keep-unfinished-downlo
 
 if not aria2_options:
     aria2_options = aria2.client.get_global_option()
-    del aria2_options['dir']
 else:
-    a2c_glo = {}
-    for op in aria2c_global:
-        if op in aria2_options:
-            a2c_glo[op] = aria2_options[op]
+    a2c_glo = {op: aria2_options[op]
+               for op in aria2c_global if op in aria2_options}
     aria2.set_global_options(a2c_glo)
 
 qb_client = get_client()
@@ -915,8 +782,11 @@ else:
             del qb_opt[k]
     qb_client.app_set_preferences(qb_opt)
 
-tgDefaults = Defaults(parse_mode='HTML', disable_web_page_preview=True, allow_sending_without_reply=True, run_async=True)
-updater = tgUpdater(token=BOT_TOKEN, defaults=tgDefaults, request_kwargs={'read_timeout': 20, 'connect_timeout': 15})
-bot = updater.bot
-dispatcher = updater.dispatcher
-job_queue = updater.job_queue
+log_info("Creating client from BOT_TOKEN")
+bot = tgClient('bot', TELEGRAM_API, TELEGRAM_HASH, bot_token=BOT_TOKEN, workers=1000,
+               parse_mode=enums.ParseMode.HTML).start()
+bot_loop = bot.loop
+bot_name = bot.me.username
+scheduler = AsyncIOScheduler(timezone=str(
+    get_localzone()), event_loop=bot_loop)
+    

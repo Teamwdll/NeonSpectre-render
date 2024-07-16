@@ -1,182 +1,135 @@
-from re import match as re_match, findall as re_findall
-from os import path as ospath, rename as osrename
-from threading import Thread, Event
-from time import time
+#!/usr/bin/env python3
+import platform
+from base64 import b64encode
 from datetime import datetime
-from math import ceil
+from os import path as ospath
+from pkg_resources import get_distribution
+from aiofiles import open as aiopen
+from aiofiles.os import remove as aioremove, path as aiopath, mkdir
+from re import match as re_match
+from time import time
 from html import escape
-from psutil import cpu_percent, disk_usage, net_io_counters, virtual_memory
-from requests import head as rhead
-from urllib.request import urlopen
+from uuid import uuid4
+from subprocess import run as srun
+from psutil import disk_usage, disk_io_counters, Process, cpu_percent, swap_memory, cpu_count, cpu_freq, getloadavg, virtual_memory, net_io_counters, boot_time
+from asyncio import create_subprocess_exec, create_subprocess_shell, run_coroutine_threadsafe, sleep
+from asyncio.subprocess import PIPE
+from functools import partial, wraps
+from concurrent.futures import ThreadPoolExecutor
+
+from aiohttp import ClientSession as aioClientSession
+from psutil import virtual_memory, cpu_percent, disk_usage
+from requests import get as rget
+from mega import MegaApi
+from hydrogram.enums import ChatType
+from hydrogram.types import BotCommand
+from hydrogram.errors import PeerIdInvalid
 
 from bot.helper.ext_utils.db_handler import DbManger
+from bot.helper.themes import BotTheme
+from bot.version import get_version
+from bot import OWNER_ID, bot_name, bot_cache, DATABASE_URL, LOGGER, get_client, aria2, download_dict, download_dict_lock, botStartTime, user_data, config_dict, bot_loop, extra_buttons, user
 from bot.helper.telegram_helper.bot_commands import BotCommands
 from bot.helper.telegram_helper.button_build import ButtonMaker
-from bot import LOGGER, CATEGORY_IDS, CATEGORY_INDEX, CATEGORY_NAMES, DATABASE_URL, dispatcher, download_dict, \
-                download_dict_lock, botStartTime, DOWNLOAD_DIR, user_data, config_dict
-from telegram.ext import CallbackQueryHandler
+from bot.helper.ext_utils.telegraph_helper import telegraph
+from bot.helper.ext_utils.shortners import short_url
 
-
-MAGNET_REGEX = r"magnet:\?xt=urn:btih:[a-zA-Z0-9]*"
-
-URL_REGEX = r"(?:(?:https?|ftp):\/\/)?[\w/\-?=%.]+\.[\w/\-?=%.]+"
-
-COUNT = 0
-PAGE_NO = 1
-PAGES = 0
+THREADPOOL   = ThreadPoolExecutor(max_workers=1000)
+MAGNET_REGEX = r'magnet:\?xt=urn:(btih|btmh):[a-zA-Z0-9]*\s*'
+URL_REGEX    = r'^(?!\/)(rtmps?:\/\/|mms:\/\/|rtsp:\/\/|https?:\/\/|ftp:\/\/)?([^\/:]+:[^\/@]+@)?(www\.)?(?=[^\/:\s]+\.[^\/:\s]+)([^\/:\s]+\.[^\/:\s]+)(:\d+)?(\/[^#\s]*[\s\S]*)?(\?[^#\s]*)?(#.*)?$'
+SIZE_UNITS   = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB']
+STATUS_START = 0
+PAGES        = 1
+PAGE_NO      = 1
 
 
 class MirrorStatus:
-    if config_dict['EMOJI_THEME']:
-        STATUS_UPLOADING = "Upload"
-        STATUS_DOWNLOADING = "📥 Download"
-        STATUS_CLONING = "♻️ Clone"
-        STATUS_QUEUEDL = "💤 QueueDl"
-        STATUS_QUEUEUP = "💤 QueueUp"
-        STATUS_PAUSED = "⛔️ Pause"
-        STATUS_ARCHIVING = "🔐 Archive"
-        STATUS_EXTRACTING = "📂 Extract"
-        STATUS_SPLITTING = "✂️ Split"
-        STATUS_CHECKING = "📝 CheckUp"
-        STATUS_SEEDING = "🌧 Seed"
-        STATUS_CONVERTING = "↔️ Convert"
-    else:
-        STATUS_UPLOADING = "Upload"
-        STATUS_DOWNLOADING = "Download"
-        STATUS_CLONING = "Clone"
-        STATUS_QUEUEDL = "QueueDl"
-        STATUS_QUEUEUP = "QueueUp"
-        STATUS_PAUSED = "Pause"
-        STATUS_ARCHIVING = "Archive"
-        STATUS_EXTRACTING = "Extract"
-        STATUS_SPLITTING = "Split"
-        STATUS_CHECKING = "CheckUp"
-        STATUS_SEEDING = "Seed"
-        STATUS_CONVERTING = "↔️ Convert"
+    STATUS_UPLOADING   = "Upload"
+    STATUS_DOWNLOADING = "Download"
+    STATUS_CLONING     = "Clone"
+    STATUS_QUEUEDL     = "QueueDL"
+    STATUS_QUEUEUP     = "QueueUp"
+    STATUS_PAUSED      = "Pause"
+    STATUS_ARCHIVING   = "Archive"
+    STATUS_EXTRACTING  = "Extract"
+    STATUS_SPLITTING   = "Split"
+    STATUS_CHECKING    = "CheckUp"
+    STATUS_SEEDING     = "Seed"
+    STATUS_UPLOADDDL   = "Upload DDL"
 
-class EngineStatus:
-    STATUS_ARIA = "Aria2c"
-    STATUS_GD = "Google Api"
-    STATUS_MEGA = "MegaSDK"
-    STATUS_QB = "qBittorrent"
-    STATUS_TG = "Hgram"
-    STATUS_YT = "YT-dlp"
-    STATUS_EXT = "Extract | pExtract"
-    STATUS_SPLIT_MERGE = "FFmpeg"
-    STATUS_ZIP = "p7zip"
-    STATUS_QUEUE = "Sleep"
-
-    
-SIZE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB', 'PB']
 
 class setInterval:
     def __init__(self, interval, action):
         self.interval = interval
         self.action = action
-        self.stopEvent = Event()
-        thread = Thread(target=self.__setInterval)
-        thread.start()
+        self.task = bot_loop.create_task(self.__set_interval())
 
-    def __setInterval(self):
-        nextTime = time() + self.interval
-        while not self.stopEvent.wait(nextTime - time()):
-            self.action()
-            nextTime = time() + self.interval
+    async def __set_interval(self):
+        while True:
+            await sleep(self.interval)
+            await self.action()
 
     def cancel(self):
-        self.stopEvent.set()
+        self.task.cancel()
 
-def get_readable_file_size(size_in_bytes) -> str:
+
+def get_readable_file_size(size_in_bytes):
     if size_in_bytes is None:
         return '0B'
     index = 0
-    while size_in_bytes >= 1024:
+    while size_in_bytes >= 1024 and index < len(SIZE_UNITS) - 1:
         size_in_bytes /= 1024
         index += 1
-    try:
-        return f'{round(size_in_bytes, 2)}{SIZE_UNITS[index]}'
-    except IndexError:
-        return 'File too large'
+    return f'{size_in_bytes:.2f}{SIZE_UNITS[index]}' if index > 0 else f'{size_in_bytes}B'
+
 
 async def getDownloadByGid(gid):
     async with download_dict_lock:
-        for dl in list(download_dict.values()):
-            if dl.gid() == gid:
-                return dl
-    return None
+        return next((dl for dl in download_dict.values() if dl.gid() == gid), None)
 
-async def getAllDownload(req_status: str):
+
+async def getAllDownload(req_status, user_id=None):
+    dls = []
     async with download_dict_lock:
         for dl in list(download_dict.values()):
+            if user_id and user_id != dl.message.from_user.id:
+                continue
             status = dl.status()
             if req_status in ['all', status]:
-                return dl
-    return None
+                dls.append(dl)
+    return dls
 
-def bt_selection_buttons(id_: str):
+
+async def get_user_tasks(user_id, maxtask):
+    if tasks := await getAllDownload('all', user_id):
+        return len(tasks) >= maxtask
+
+
+def bt_selection_buttons(id_):
     gid = id_[:12] if len(id_) > 20 else id_
-
-    pincode = ""
-    for n in id_:
-        if n.isdigit():
-            pincode += str(n)
-        if len(pincode) == 4:
-            break
-
+    pincode = ''.join([n for n in id_ if n.isdigit()][:4])
     buttons = ButtonMaker()
     BASE_URL = config_dict['BASE_URL']
     if config_dict['WEB_PINCODE']:
-        buttons.buildbutton("Select Files", f"{BASE_URL}/app/files/{id_}")
-        buttons.sbutton("Pincode", f"btsel pin {gid} {pincode}")
+        buttons.ubutton("Select Files", f"{BASE_URL}/app/files/{id_}")
+        buttons.ibutton("Pincode", f"btsel pin {gid} {pincode}")
     else:
-        buttons.buildbutton("Select Files", f"{BASE_URL}/app/files/{id_}?pin_code={pincode}")
-    buttons.sbutton("Done Selecting", f"btsel done {gid} {id_}")
+        buttons.ubutton("Select Files", f"{BASE_URL}/app/files/{id_}?pin_code={pincode}")
+    buttons.ibutton("Cancel", f"btsel rm {gid} {id_}")
+    buttons.ibutton("Done Selecting", f"btsel done {gid} {id_}")
     return buttons.build_menu(2)
 
 
-def get_user_task(user_id):
-    user_task = 0
-    for task in list(download_dict.values()):
-        userid = task.message.from_user.id
-        if userid == user_id: user_task += 1
-    return user_task
-
-def get_bot_pm(user_id):
-    if config_dict['FORCE_BOT_PM']:
-        return True
-    else:
-        if not (user_id in user_data and user_data[user_id].get('ubot_pm')):
-            update_user_ldata(user_id, 'ubot_pm', config_dict['BOT_PM'])
-        botpm = user_data[user_id].get('ubot_pm')
-        return botpm
-
-def getGDriveUploadUtils(user_id, u_index, c_index):
-    GDRIVEID = config_dict['GDRIVE_ID']
-    INDEXURL = config_dict['INDEX_URL']
-    if u_index is not None:
-        _, GDriveID, IndexURL = getUserTDs(user_id)
-        GDRIVEID = GDriveID[u_index]
-        INDEXURL = IndexURL[u_index]
-    elif c_index != 0:
-        GDRIVEID = CATEGORY_IDS[c_index]
-        INDEXURL = CATEGORY_INDEX[c_index]
-    return GDRIVEID, INDEXURL
-
-def getUserTDs(user_id, force=False):
-    GDriveID, IndexURL, GDNames = [], [], []
-    if user_id in user_data and (user_data[user_id].get('is_usertd') or force) and user_data[user_id].get('usertd'):
-        LOGGER.info("Using USER TD!")
-        userDest = (user_data[user_id].get('usertd')).split('\n')
-        if len(userDest) != 0:
-            for i, _ in enumerate(userDest):
-                arrForUser = userDest[i].split()
-                GDNames.append(arrForUser[0])
-                GDriveID.append(arrForUser[1])
-                IndexURL.append(arrForUser[2].rstrip('/') if len(arrForUser) > 2 else '')
-    return GDNames, GDriveID, IndexURL
+async def get_telegraph_list(telegraph_content):
+    path = [(await telegraph.create_page(title=f"{config_dict['TITLE_NAME']} Drive Search", content=content))["path"] for content in telegraph_content]
+    if len(path) > 1:
+        await telegraph.edit_telegraph(path, telegraph_content)
+    buttons = ButtonMaker()
+    buttons.ubutton("🔎 VIEW", f"https://telegra.ph/{path[0]}")
+    buttons = extra_btns(buttons)
+    return buttons.build_menu(1)
 
 def handleIndex(index, dic):
-    """Handle IndexError for any List (Runs Index Loop) +ve & -ve Supported"""
     while True:
         if abs(index) >= len(dic):
             if index < 0: index = len(dic) - abs(index)
@@ -184,520 +137,566 @@ def handleIndex(index, dic):
         else: break
     return index
 
-def userlistype(user_id):
-    user_dict = user_data.get(user_id, False)
-    if user_dict and user_dict.get("ulist_typ"):
-        tegr = user_dict.get("ulist_typ") == "Telegraph"
-        html = user_dict.get("ulist_typ") == "HTML"
-        tgdi = user_dict.get("ulist_typ") == "Tele_Msg"
-    else:
-        tegr = config_dict['LIST_MODE'].lower() == "telegraph"
-        html = config_dict['LIST_MODE'].lower() == "html"
-        tgdi = config_dict['LIST_MODE'].lower() == "tg_direct"
-    return tegr, html, tgdi
-
-def progress_bar(percentage):
-    """Returns a progress bar for download"""
-    if isinstance(percentage, str):
-        return "N/A"
-    try:
-        percentage = int(percentage)
-    except Exception:
-        percentage = 0
-    comp = "■"
-    ncomp = "□"
-    return "".join(comp if i <= percentage // 10 else ncomp for i in range(1, 11))
-
-def timeformatter(milliseconds: int) -> str:
-    seconds, milliseconds = divmod(int(milliseconds), 1000)
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-    days, hours = divmod(hours, 24)
-    tmp = ((str(days) + " days, ") if days else "") + \
-        ((str(hours) + " hours, ") if hours else "") + \
-        ((str(minutes) + " min, ") if minutes else "") + \
-        ((str(seconds) + " sec, ") if seconds else "") + \
-        ((str(milliseconds) + " millisec, ") if milliseconds else "")
-    return tmp[:-2]
-
-def get_progress_bar_string(status):
-    completed = status.processed_bytes() / 8
-    total = status.size_raw() / 8
-    p = 0 if total == 0 else round(completed * 100 / total)
-    p = min(max(p, 0), 100)
-    cFull = p // 8
-    cPart = p % 8 - 1
-    p_str = config_dict['FINISHED_PROGRESS_STR'] * cFull
-    if cPart >= 0:
-        p_str += config_dict['MULTI_WORKING_PROGRESS_STR'][cPart]
-    p_str += config_dict['UN_FINISHED_PROGRESS_STR']  * (12 - cFull)
+def get_progress_bar_string(pct):
+    pct = float(pct.strip("%"))
+    p = min(max(pct, 0), 100)
+    cFull = int(p // 8)
+    p_str = "■" * cFull
+    p_str += "□" * (12 - cFull)
     return f"[{p_str}]"
 
 
-def get_readable_message():
-    with download_dict_lock:
-        msg = f""
-        if STATUS_LIMIT := config_dict['STATUS_LIMIT']:
-            tasks = len(download_dict)
-            global pages
-            globals()['PAGES'] = ceil(tasks/STATUS_LIMIT)
-            if PAGE_NO > PAGES and PAGES != 0:
-                globals()['COUNT'] -= STATUS_LIMIT
-                globals()['PAGE_NO'] -= 1
-        for index, download in enumerate(list(download_dict.values())[COUNT:], start=1):
-            msg += f"<b>{download.status()}: </b>"
-            msg += f"<code>{escape(str(download.name()))}</code>"
-            if download.status() not in [MirrorStatus.STATUS_SEEDING, MirrorStatus.STATUS_SPLITTING, MirrorStatus.STATUS_CONVERTING, MirrorStatus.STATUS_QUEUEDL, MirrorStatus.STATUS_QUEUEUP]:
-                if config_dict['EMOJI_THEME']:
-                    msg += f"\n<b></b>{get_progress_bar_string(download)} {download.progress()}"
-                    msg += f"\n<b>Process:</b> {get_readable_file_size(download.processed_bytes())} of {download.size()}"
-                    msg += f"\n<b>Speed:</b> {download.speed()}"
-                    msg += f"<b> | <b>ETA:</b> {download.eta()}"
-                    msg += f'\n<b>Engine :</b> {download.eng()}'
-
-                else:
-                    msg += f"\n<b></b>{get_progress_bar_string(download)} {download.progress()}"
-                    msg += f"\n<b>Processed:</b> {get_readable_file_size(download.processed_bytes())} of {download.size()}"
-                    msg += f"\n<b>Speed:</b> {download.speed()}"
-                    msg += f"<b> | ETA:</b> {download.eta()}"
-                    msg += f'\n<b>Engine :</b> {download.eng()}'
-
-                if hasattr(download, 'seeders_num'):
-                    try:
-                        if config_dict['EMOJI_THEME']:
-                            msg += f"\n<b>Seeders:</b> {download.seeders_num()} | <b>Leechers:</b> {download.leechers_num()}"
-                            msg += f"\n<b>Select:</b> <code>/{BotCommands.BtSelectCommand} {download.gid()}</code>"
-                        else:
-                            msg += f"\n<b>Seeders:</b> {download.seeders_num()} | <b>Leechers:</b> {download.leechers_num()}"
-                            msg += f"\n<b>Select:</b> <code>/{BotCommands.BtSelectCommand} {download.gid()}</code>"
-                    except:
-                        pass
-                if download.message.chat.type != 'private':
-                    try:
-                        chatid = str(download.message.chat.id)[4:]
-                        if config_dict['EMOJI_THEME']:
-                            
-                            msg += f"\n<b>cancel:</b><code> {download.gid()}</code>"
-                        else:
-                            msg += f"\n<b>Cancel: </b><code>{download.gid()}</code>"                 
-                    except:
-                        pass
-                else:
-                    if config_dict['EMOJI_THEME']:
-                        msg += f"\n<b>cancel: </b><code>{download.gid()}</code>"
-                    else:
-                        msg += f"\n<b>Cancel: </b><code> {download.gid()}</code>"
-
-            elif download.status() == MirrorStatus.STATUS_SEEDING:
-                if config_dict['EMOJI_THEME']:
-                    msg += f"\n<b>Size: </b>{download.size()}"
-                    msg += f"\n<b>Engine:</b> <code>qBittorrent</code>"
-                    msg += f"\n<b>Speed: </b>{download.upload_speed()}"
-                    msg += f"\n<b>Uploaded: </b>{download.uploaded_bytes()}"
-                    msg += f"\n<b>Ratio: </b>{download.ratio()}"
-                    msg += f" | <b>Time: </b>{download.seeding_time()}"
-                    msg += f"\n<b>Elapsed: </b>{get_readable_time(time() - download.message.date.timestamp())}"
-                    msg += f"\n<b>cancel </b><code> {download.gid()}</code>"
-                else:
-                    msg += f"\n<b>Size: </b>{download.size()}"
-                    msg += f"\n<b>Engine:</b> <code>qBittorrent</code>"
-                    msg += f"\n<b>Speed: </b>{download.upload_speed()}"
-                    msg += f"\n<b>Uploaded: </b>{download.uploaded_bytes()}"
-                    msg += f"\n<b>Ratio: </b>{download.ratio()}"
-                    msg += f" | <b> Time: </b>{download.seeding_time()}"
-                    msg += f"\n<b>Elapsed: </b>{get_readable_time(time() - download.message.date.timestamp())}"
-                    msg += f"\n<b></b><code>{download.gid()}</code>"
-            else:
-                if config_dict['EMOJI_THEME']:
-                    msg += f"\n<b>├⛓️ Engine :</b> {download.eng()}"
-                    msg += f"\n<b>╰📐 Size: </b>{download.size()}"
-                else:
-                    msg += f"\n<b>Engine :</b> {download.eng()}"
-                    msg += f"\n<b>Size: </b>{download.size()}"
-            msg += f"\n<b>_________________________________</b>"
-            msg += "\n\n"
-            if index == STATUS_LIMIT:
-                break
-        if len(msg) == 0:
-            return None, None
-        dl_speed = 0
-        up_speed = 0
-        for download in list(download_dict.values()):
-            spd = download.speed()
-            if download.status() == MirrorStatus.STATUS_DOWNLOADING:
-                spd = download.speed()
-                if 'K' in spd:
-                    dl_speed += float(spd.split('K')[0]) * 1024
-                elif 'M' in spd:
-                    dl_speed += float(spd.split('M')[0]) * 1048576
-            elif download.status() == MirrorStatus.STATUS_UPLOADING:
-                spd = download.speed()
-                if 'KB/s' in spd:
-                    up_speed += float(spd.split('K')[0]) * 1024
-                elif 'MB/s' in spd:
-                    up_speed += float(spd.split('M')[0]) * 1048576
-            elif download.status() == MirrorStatus.STATUS_SEEDING:
-                spd = download.upload_speed()
-                if 'K' in spd:
-                    up_speed += float(spd.split('K')[0]) * 1024
-                elif 'M' in spd:
-                    up_speed += float(spd.split('M')[0]) * 1048576
-        if config_dict['EMOJI_THEME']:
-            bmsg = f"<b>CPU:</b> {cpu_percent()}% | <b>FREE:</b> {get_readable_file_size(disk_usage(DOWNLOAD_DIR).free)}"
-            bmsg += f"\n<b>RAM:</b> {virtual_memory().percent}% | <b>UPTIME:</b> {get_readable_time(time() - botStartTime)}"
-        else:
-            bmsg = f"<b>CPU:</b> {cpu_percent()}% | <b>FREE:</b> {get_readable_file_size(disk_usage(DOWNLOAD_DIR).free)}"
-            bmsg += f"\n<b>RAM:</b> {virtual_memory().percent}% | <b>UPTIME:</b> {get_readable_time(time() - botStartTime)}"
-        
-        buttons = ButtonMaker()
-        buttons.sbutton("♻️", "status refresh")
-        buttons.sbutton("📜", str(THREE))
-        sbutton = buttons.build_menu(2)
-        
-        if STATUS_LIMIT and tasks > STATUS_LIMIT:
-            msg += f"<b>Tasks:</b> {tasks}\n"
-            buttons = ButtonMaker()
-            if config_dict['EMOJI_THEME']:
-                buttons.sbutton("⇚", "status pre")
-                buttons.sbutton(f"{PAGE_NO}/{PAGES}", str(THREE))
-                buttons.sbutton("⇛", "status nex")
-                buttons.sbutton("♻️", "status refresh")
-                buttons.sbutton("❌", "status close")
-            else:
-                buttons.sbutton("⇚", "status pre")
-                buttons.sbutton(f"{PAGE_NO}/{PAGES}", str(THREE))
-                buttons.sbutton("⇛", "status nex")
-                buttons.sbutton("♻️", "status refresh")
-                buttons.sbutton("❌", "status close")
-            button = buttons.build_menu(3)
-            return msg + bmsg, button
-        return msg + bmsg, sbutton
-
-def get_category_buttons(query_data, timeout, msg_id, c_index, u_index, user_id):
-    text = '<b>Selct the category in which you want to upload</b>'
-    buttons = ButtonMaker()
-    if user_id in user_data and user_data[user_id].get('is_usertd') and u_index is not None:
-        GDNames, _, _ = getUserTDs(user_id)
-        text += f"\n<b>Upload</b>: To Drive in {GDNames[u_index]} folder"
-        if len(GDNames) != 0:
-            for j, _gname in enumerate(GDNames):
-                buttons.sbutton(f'{_gname} {"✅" if u_index is not None and _gname == GDNames[u_index] else ""}', f"{query_data} ucat {msg_id} {j}")
-    else:
-        text += f"\n<b>Upload</b>: To Drive in {CATEGORY_NAMES[c_index]} folder"
-        for i, _name in enumerate(CATEGORY_NAMES):
-            buttons.sbutton(f'{_name} {"✅" if u_index is None and _name == CATEGORY_NAMES[c_index] else ""}', f"{query_data} scat {msg_id} {i}")
-    text += f"<u>\n\nYou have {get_readable_time(timeout)} to select mode</u>"
-    buttons.sbutton('Cancel', f"{query_data} cancel {msg_id}", 'footer')
-    bname = "Update" if query_data == 'change' else "Start"
-    buttons.sbutton(f'{bname} ({get_readable_time(timeout)})', f'{query_data} start {msg_id}', 'footer')
-    return text, buttons.build_menu(3)
-
-
-def turn(data):
-    STATUS_LIMIT = config_dict['STATUS_LIMIT']
+def get_all_versions():
     try:
-        with download_dict_lock:
-            global COUNT, PAGE_NO
-            if data[1] == "nex":
-                if PAGE_NO == PAGES:
-                    COUNT = 0
-                    PAGE_NO = 1
-                else:
-                    COUNT += STATUS_LIMIT
-                    PAGE_NO += 1
-            elif data[1] == "pre":
-                if PAGE_NO == 1:
-                    COUNT = STATUS_LIMIT * (PAGES - 1)
-                    PAGE_NO = PAGES
-                else:
-                    COUNT -= STATUS_LIMIT
-                    PAGE_NO -= 1
-        return True
-    except:
-        return False
+        result = srun(['7z', '-version'], capture_output=True, text=True)
+        vp = result.stdout.split('\n')[2].split(' ')[2]
+    except FileNotFoundError:
+        vp = ''
+    try:
+        result = srun(['ffmpeg', '-version'], capture_output=True, text=True)
+        vf = result.stdout.split('\n')[0].split(' ')[2].split('ubuntu')[0]
+    except FileNotFoundError:
+        vf = ''
+    try:
+        result = srun(['rclone', 'version'], capture_output=True, text=True)
+        vr = result.stdout.split('\n')[0].split(' ')[1]
+    except FileNotFoundError:
+        vr = ''
+    bot_cache['eng_versions'] = {'p7zip':vp, 'ffmpeg': vf, 'rclone': vr,
+                                    'aria': aria2.client.get_version()['version'],
+                                    'aiohttp': get_distribution('aiohttp').version,
+                                    'gapi': get_distribution('google-api-python-client').version,
+                                    'mega': MegaApi('test').getVersion(),
+                                    'qbit': get_client().app.version,
+                                    'pyro': get_distribution('hydrogram').version,
+                                    'ytdlp': get_distribution('yt-dlp').version}
 
-def get_readable_time(seconds: int) -> str:
+
+class EngineStatus:
+    def __init__(self):
+        if not (version_cache := bot_cache.get('eng_versions')):
+            get_all_versions()
+            version_cache = bot_cache.get('eng_versions')
+        self.STATUS_ARIA = f"Aria2 v{version_cache['aria']}"
+        self.STATUS_AIOHTTP = f"AioHttp {version_cache['aiohttp']}"
+        self.STATUS_GD = f"Google-API v{version_cache['gapi']}"
+        self.STATUS_MEGA = f"MegaSDK v{version_cache['mega']}"
+        self.STATUS_QB = f"qBit {version_cache['qbit']}"
+        self.STATUS_TG = f"hydrogram v{version_cache['pyro']}"
+        self.STATUS_YT = f"yt-dlp v{version_cache['ytdlp']}"
+        self.STATUS_EXT = "pExtract v2"
+        self.STATUS_SPLIT_MERGE = f"ffmpeg v{version_cache['ffmpeg']}"
+        self.STATUS_ZIP = f"p7zip v{version_cache['p7zip']}"
+        self.STATUS_QUEUE = "Sleep v0"
+        self.STATUS_RCLONE = f"RClone {version_cache['rclone']}"
+
+
+def get_readable_message():
+    msg = ""
+    button = None
+    STATUS_LIMIT = config_dict['STATUS_LIMIT']
+    tasks = len(download_dict)
+    globals()['PAGES'] = (tasks + STATUS_LIMIT - 1) // STATUS_LIMIT
+    if PAGE_NO > PAGES and PAGES != 0:
+        globals()['STATUS_START'] = STATUS_LIMIT * (PAGES - 1)
+        globals()['PAGE_NO'] = PAGES
+    for download in list(download_dict.values())[STATUS_START:STATUS_LIMIT+STATUS_START]:
+        msg_link = download.message.link if download.message.chat.type in [
+            ChatType.SUPERGROUP, ChatType.CHANNEL] and not config_dict['DELETE_LINKS'] else ''
+        msg += BotTheme('STATUS_NAME', Name="Task is being Processed!" if config_dict['SAFE_MODE'] else escape(f'{download.name()}'))
+        if download.status() not in [MirrorStatus.STATUS_SPLITTING, MirrorStatus.STATUS_SEEDING]:
+            if download.status() != MirrorStatus.STATUS_UPLOADDDL:
+                msg += BotTheme('BAR', Bar=f"{get_progress_bar_string(download.progress())} {download.progress()}")
+                msg += BotTheme('PROCESSED', Processed=f"{download.processed_bytes()}/{download.size()}")
+            msg += BotTheme('STATUS', Status=download.status(), Url=msg_link)
+            if download.status() != MirrorStatus.STATUS_UPLOADDDL:
+                msg += BotTheme('ETA', Eta=download.eta())
+                msg += BotTheme('SPEED', Speed=download.speed())
+            msg += BotTheme('ENGINE', Engine=download.eng())
+            msg += BotTheme('STA_MODE', Mode=download.upload_details['mode'])
+            if hasattr(download, 'seeders_num'):
+                try:
+                    msg += (BotTheme('SLD', Seeders=download.seeders_num(),Leechers=download.leechers_num()))
+                except:
+                    pass
+        elif download.status() == MirrorStatus.STATUS_SEEDING:
+            msg += BotTheme('STATUS', Status=download.status(), Url=msg_link)
+            msg += BotTheme('SEED_SIZE', Size=download.size())
+            msg += BotTheme('SEED_SPEED', Speed=download.upload_speed())
+            msg += BotTheme('UPLOADED', Upload=download.uploaded_bytes())
+            msg += BotTheme('RATIO', Ratio=download.ratio())
+            msg += BotTheme('TIME', Time=download.seeding_time())
+            msg += BotTheme('SEED_ENGINE', Engine=download.eng())
+        else:
+            msg += BotTheme('STATUS', Status=download.status(), Url=msg_link)
+            msg += BotTheme('STATUS_SIZE', Size=download.size())
+            msg += BotTheme('NON_ENGINE', Engine=download.eng())
+
+        msg += BotTheme('USER',
+                        User=download.message.from_user.mention(style="html"))
+        msg += BotTheme('ID', Id=download.message.from_user.id)
+        if (download.eng()).startswith("qBit"):
+            msg += BotTheme('BTSEL', Btsel=f"/{BotCommands.BtSelectCommand}_{download.gid()}")
+        msg += BotTheme('CANCEL', Cancel=f"/{BotCommands.CancelMirror}_{download.gid()}")
+
+    if len(msg) == 0:
+        return None, None
+
+    dl_speed = 0
+
+    def convert_speed_to_bytes_per_second(spd):
+        if 'K' in spd:
+            return float(spd.split('K')[0]) * 1024
+        elif 'M' in spd:
+            return float(spd.split('M')[0]) * 1048576
+        else:
+            return 0
+
+    dl_speed = 0
+    up_speed = 0
+    for download in download_dict.values():
+        tstatus = download.status()
+        spd = download.speed() if tstatus != MirrorStatus.STATUS_SEEDING else download.upload_speed()
+        speed_in_bytes_per_second = convert_speed_to_bytes_per_second(spd)
+        if tstatus == MirrorStatus.STATUS_DOWNLOADING:
+            dl_speed += speed_in_bytes_per_second
+        elif tstatus == MirrorStatus.STATUS_UPLOADING or tstatus == MirrorStatus.STATUS_SEEDING:
+            up_speed += speed_in_bytes_per_second
+
+    msg += BotTheme('FOOTER')
+    buttons = ButtonMaker()
+    buttons.ibutton(BotTheme('REFRESH', Page=f"{PAGE_NO}/{PAGES}"), "status ref")
+    if tasks > STATUS_LIMIT:
+        if config_dict['BOT_MAX_TASKS']:
+            msg += BotTheme('BOT_TASKS', Tasks=tasks, Ttask=config_dict['BOT_MAX_TASKS'], Free=config_dict['BOT_MAX_TASKS']-tasks)
+        else:
+            msg += BotTheme('TASKS', Tasks=tasks)
+        buttons = ButtonMaker()
+        buttons.ibutton(BotTheme('PREVIOUS'), "status pre")
+        buttons.ibutton(BotTheme('REFRESH', Page=f"{PAGE_NO}/{PAGES}"), "status ref")
+        buttons.ibutton(BotTheme('NEXT'), "status nex")
+    button = buttons.build_menu(3)
+    msg += BotTheme('Cpu', cpu=cpu_percent())
+    msg += BotTheme('FREE', free=get_readable_file_size(disk_usage(config_dict['DOWNLOAD_DIR']).free), free_p=round(100-disk_usage(config_dict['DOWNLOAD_DIR']).percent, 1))
+    msg += BotTheme('Ram', ram=virtual_memory().percent)
+    msg += BotTheme('uptime', uptime=get_readable_time(time() - botStartTime))
+    msg += BotTheme('DL', DL=get_readable_file_size(dl_speed))
+    msg += BotTheme('UL', UL=get_readable_file_size(up_speed))
+    return msg, button
+
+
+async def turn_page(data):
+    STATUS_LIMIT = config_dict['STATUS_LIMIT']
+    global STATUS_START, PAGE_NO
+    async with download_dict_lock:
+        if data[1] == "nex":
+            if PAGE_NO == PAGES:
+                STATUS_START = 0
+                PAGE_NO = 1
+            else:
+                STATUS_START += STATUS_LIMIT
+                PAGE_NO += 1
+        elif data[1] == "pre":
+            if PAGE_NO == 1:
+                STATUS_START = STATUS_LIMIT * (PAGES - 1)
+                PAGE_NO = PAGES
+            else:
+                STATUS_START -= STATUS_LIMIT
+                PAGE_NO -= 1
+
+
+def get_readable_time(seconds):
+    periods = [('d', 86400), ('h', 3600), ('m', 60), ('s', 1)]
     result = ''
-    (days, remainder) = divmod(seconds, 86400)
-    days = int(days)
-    if days != 0:
-        result += f'{days}d'
-    (hours, remainder) = divmod(remainder, 3600)
-    hours = int(hours)
-    if hours != 0:
-        result += f'{hours}h'
-    (minutes, seconds) = divmod(remainder, 60)
-    minutes = int(minutes)
-    if minutes != 0:
-        result += f'{minutes}m'
-    seconds = int(seconds)
-    result += f'{seconds}s'
+    for period_name, period_seconds in periods:
+        if seconds >= period_seconds:
+            period_value, seconds = divmod(seconds, period_seconds)
+            result += f'{int(period_value)}{period_name}'
     return result
 
-def is_url(url: str):
-    url = re_findall(URL_REGEX, url)
-    return bool(url)
 
-def is_gdrive_link(url: str):
+def is_magnet(url):
+    return bool(re_match(MAGNET_REGEX, url))
+
+
+def is_url(url):
+    return bool(re_match(URL_REGEX, url))
+
+
+def is_gdrive_link(url):
     return "drive.google.com" in url
 
-def is_gdtot_link(url: str):
-    url = re_match(r'https?://.+\.gdtot\.\S+', url)
-    return bool(url)
 
-def is_udrive_link(url: str):
-    if 'drivehub.ws' in url:
-        return 'drivehub.ws' in url
-    else:
-        url = re_match(r'https?://(hubdrive|katdrive|kolop|drivefire)\.\S+', url)
-        return bool(url)
-    
-def is_sharer_link(url: str):
-    url = re_match(r'https?://(sharer)\.pw/\S+', url)
-    return bool(url)
+def is_telegram_link(url):
+    return url.startswith(('https://t.me/', 'https://telegram.me/', 'https://telegram.dog/', 'https://telegram.space/', 'tg://openmessage?user_id='))
 
-def is_sharedrive_link(url: str):
-    url = re_match(r'https?://(sharedrive)\.\S+', url)
-    return bool(url)
 
-def is_filepress_link(url: str):
-    url = re_match(r'https?://(filepress|filebee)\.\S+', url)
-    return bool(url)
+def is_share_link(url):
+    return bool(re_match(r'https?:\/\/.+\.gdtot\.\S+|https?:\/\/(filepress|filebee|appdrive|gdflix)\.\S+', url))
 
-def is_mega_link(url: str):
+
+def is_mega_link(url):
     return "mega.nz" in url or "mega.co.nz" in url
 
-def get_mega_link_type(url: str):
-    if "folder" in url:
-        return "folder"
-    elif "file" in url:
-        return "file"
-    elif "/#F!" in url:
-        return "folder"
-    return "file"
 
-def is_magnet(url: str):
-    magnet = re_findall(MAGNET_REGEX, url)
-    return bool(magnet)
+def is_rclone_path(path):
+    return bool(re_match(r'^(mrcc:)?(?!magnet:)(?![- ])[a-zA-Z0-9_\. -]+(?<! ):(?!.*\/\/).*$|^rcl$', path))
 
-def new_thread(fn):
-    """To use as decorator to make a function call threaded.
-    Needs import
-    from threading import Thread"""
 
+def get_mega_link_type(url):
+    return "folder" if "folder" in url or "/#F!" in url else "file"
+
+
+def arg_parser(items, arg_base):
+    if not items:
+        return arg_base
+    bool_arg_set = {'-b', '-e', '-z', '-s', '-j', '-d'}
+    t = len(items)
+    i = 0
+    arg_start = -1
+
+    while i + 1 <= t:
+        part = items[i].strip()
+        if part in arg_base:
+            if arg_start == -1:
+                arg_start = i
+            if i + 1 == t and part in bool_arg_set or part in ['-s', '-j']:
+                arg_base[part] = True
+            else:
+                sub_list = []
+                for j in range(i + 1, t):
+                    item = items[j].strip()
+                    if item in arg_base:
+                        if part in bool_arg_set and not sub_list:
+                            arg_base[part] = True
+                        break
+                    sub_list.append(item.strip())
+                    i += 1
+                if sub_list:
+                    arg_base[part] = " ".join(sub_list)
+        i += 1
+
+    link = []
+    if items[0].strip() not in arg_base:
+        if arg_start == -1:
+            link.extend(item.strip() for item in items)
+        else:
+            link.extend(items[r].strip() for r in range(arg_start))
+        if link:
+            arg_base['link'] = " ".join(link)
+    return arg_base
+
+
+async def get_content_type(url):
+    try:
+        async with aioClientSession(trust_env=True) as session:
+            async with session.get(url, verify_ssl=False) as response:
+                return response.headers.get('Content-Type')
+    except:
+        return None
+
+
+def update_user_ldata(id_, key=None, value=None):
+    exception_keys = ['is_sudo', 'is_auth', 'dly_tasks', 'is_blacklist']
+    if key is None and value is None:
+        if id_ in user_data:
+            updated_data = {}
+            for k, v in user_data[id_].items():
+                if k in exception_keys:
+                    updated_data[k] = v
+            user_data[id_] = updated_data
+        return
+    user_data.setdefault(id_, {})
+    user_data[id_][key] = value
+
+
+async def download_image_url(url):
+    path = "Images/"
+    if not await aiopath.isdir(path):
+        await mkdir(path)
+    image_name = url.split('/')[-1]
+    des_dir = ospath.join(path, image_name)
+    async with aioClientSession() as session:
+        async with session.get(url) as response:
+            if response.status == 200:
+                async with aiopen(des_dir, 'wb') as file:
+                    async for chunk in response.content.iter_chunked(1024):
+                        await file.write(chunk)
+                LOGGER.info(f"Image Downloaded Successfully as {image_name}")
+            else:
+                LOGGER.error(f"Failed to Download Image from {url}")
+    return des_dir
+
+
+async def cmd_exec(cmd, shell=False):
+    if shell:
+        proc = await create_subprocess_shell(cmd, stdout=PIPE, stderr=PIPE)
+    else:
+        proc = await create_subprocess_exec(*cmd, stdout=PIPE, stderr=PIPE)
+    stdout, stderr = await proc.communicate()
+    stdout = stdout.decode().strip()
+    stderr = stderr.decode().strip()
+    return stdout, stderr, proc.returncode
+
+
+def new_task(func):
+    @wraps(func)
     def wrapper(*args, **kwargs):
-        thread = Thread(target=fn, args=args, kwargs=kwargs)
-        thread.start()
-        return thread
-
+        return bot_loop.create_task(func(*args, **kwargs))
     return wrapper
 
-def get_content_type(link: str) -> str:
-    try:
-        res = rhead(link, allow_redirects=True, timeout=5, headers = {'user-agent': 'Wget/1.12'})
-        content_type = res.headers.get('content-type')
-    except:
-        try:
-            res = urlopen(link, timeout=5)
-            info = res.info()
-            content_type = info.get_content_type()
-        except:
-            content_type = None
-    return content_type
 
-def change_filename(file_, user_id_, dirpath=None, up_path=None, all_edit=True, mirror_type=False):
-    user_dict = user_data.get(user_id_, False)
-    if mirror_type:
-        PREFIX = user_dict.get('mprefix') if user_dict and user_dict.get('mprefix') else ''
-        REMNAME = user_dict.get('mremname') if user_dict and user_dict.get('mremname') else ''
-        SUFFIX = user_dict.get('msuffix') if user_dict and user_dict.get('msuffix') else ''
-    else:
-        PREFIX = user_dict.get('prefix') if user_dict and user_dict.get('prefix') else ''
-        REMNAME = user_dict.get('remname') if user_dict and user_dict.get('remname') else ''
-        SUFFIX = user_dict.get('suffix') if user_dict and user_dict.get('suffix') else ''
+async def sync_to_async(func, *args, wait=True, **kwargs):
+    pfunc = partial(func, *args, **kwargs)
+    future = bot_loop.run_in_executor(THREADPOOL, pfunc)
+    return await future if wait else future
 
-    FSTYLE = user_dict.get('cfont')[1] if user_dict and user_dict.get('cfont') else ''
-    CAPTION = user_dict.get('caption') if user_dict and user_dict.get('caption') else ''
 
-    #MysteryStyle ~ Tele-LeechX
-    if file_.startswith('www'):
-        file_ = ' '.join(file_.split()[1:])
-    if REMNAME:
-        if not REMNAME.startswith('|'):
-            REMNAME = f"|{REMNAME}"
-        REMNAME = REMNAME.replace('\s', ' ')
-        slit = REMNAME.split("|")
-        __newFileName = ospath.splitext(file_)[0]
-        for rep in range(1, len(slit)):
-            args = slit[rep].split(":")
-            if len(args) == 3:
-                __newFileName = __newFileName.replace(args[0], args[1], int(args[2]))
-            elif len(args) == 2:
-                __newFileName = __newFileName.replace(args[0], args[1])
-            elif len(args) == 1:
-                __newFileName = __newFileName.replace(args[0], '')
-        file_ = __newFileName + ospath.splitext(file_)[1]
-        LOGGER.info("Remname : "+file_)
-    if PREFIX:
-        PREFIX = PREFIX.replace('\s', ' ')
-        if not file_.startswith(PREFIX):
-            file_ = f"{PREFIX}{file_}"
-    if SUFFIX and not mirror_type:
-        SUFFIX = SUFFIX.replace('\s', ' ')
-        sufLen = len(SUFFIX)
-        fileDict = file_.split('.')
-        _extIn = 1 + len(fileDict[-1])
-        _extOutName = '.'.join(fileDict[:-1]).replace('.', ' ').replace('-', ' ')
-        _newExtFileName = f"{_extOutName}{SUFFIX}.{fileDict[-1]}"
-        if len(_extOutName) > (64 - (sufLen + _extIn)):
-            _newExtFileName = (
-                _extOutName[: 64 - (sufLen + _extIn)]
-                + f"{SUFFIX}.{fileDict[-1]}"
-            )
-        file_ = _newExtFileName
-    elif SUFFIX:
-        SUFFIX = SUFFIX.replace('\s', ' ')
-        file_ = f"{ospath.splitext(file_)[0]}{SUFFIX}{ospath.splitext(file_)[1]}" if '.' in file_ else f"{file_}{SUFFIX}"
+def async_to_sync(func, *args, wait=True, **kwargs):
+    future = run_coroutine_threadsafe(func(*args, **kwargs), bot_loop)
+    return future.result() if wait else future
 
-    if (PREFIX or REMNAME or SUFFIX) and all_edit:
-        new_path = ospath.join(dirpath, file_)
-        osrename(up_path, new_path)
-        up_path = new_path
 
-    cap_mono = ""
-    cfont = config_dict['CAPTION_FONT'] if not FSTYLE else FSTYLE
-    if CAPTION and all_edit:
-        CAPTION = CAPTION.replace('\|', '%%').replace('\s', ' ')
-        slit = CAPTION.split("|")
-        cap_mono = slit[0].format(
-            filename = file_,
-            size = get_readable_file_size(ospath.getsize(up_path))
+def new_thread(func):
+    @wraps(func)
+    def wrapper(*args, wait=False, **kwargs):
+        future = run_coroutine_threadsafe(func(*args, **kwargs), bot_loop)
+        return future.result() if wait else future
+    return wrapper
+
+
+async def compare_versions(v1, v2):
+    v1_parts = [int(part) for part in v1[1:-2].split('.')]
+    v2_parts = [int(part) for part in v2[1:-2].split('.')]
+    for i in range(3):
+        v1_part, v2_part = v1_parts[i], v2_parts[i]
+        if v1_part < v2_part:
+            return "New Version Update is Available! Check Now!"
+        elif v1_part > v2_part:
+            return "More Updated! Kindly Contribute in Official"
+    return "Already up to date with latest version"
+
+
+async def get_stats(event, key="home"):
+    user_id = event.from_user.id
+    btns = ButtonMaker()
+    btns.ibutton('Back', f'wzmlx {user_id} stats home')
+    if key == "home":
+        btns = ButtonMaker()
+        btns.ibutton('Bot Stats', f'wzmlx {user_id} stats stbot')
+        btns.ibutton('OS Stats', f'wzmlx {user_id} stats stsys')
+        btns.ibutton('Repo Stats', f'wzmlx {user_id} stats strepo')
+        btns.ibutton('Bot Limits', f'wzmlx {user_id} stats botlimits')
+        msg = "⌬ <b><i>Bot & OS Statistics!</i></b>"
+    elif key == "stbot":
+        total, used, free, disk = disk_usage('/')
+        swap = swap_memory()
+        memory = virtual_memory()
+        msg = BotTheme('BOT_STATS',
+            bot_uptime=get_readable_time(time() - botStartTime),
+            ram_bar=get_progress_bar_string(memory.percent),
+            ram=memory.percent,
+            ram_u=get_readable_file_size(memory.used),
+            ram_f=get_readable_file_size(memory.available),
+            ram_t=get_readable_file_size(memory.total),
+            swap_bar=get_progress_bar_string(swap.percent),
+            swap=swap.percent,
+            swap_u=get_readable_file_size(swap.used),
+            swap_f=get_readable_file_size(swap.free),
+            swap_t=get_readable_file_size(swap.total),
+            disk=disk,
+            disk_bar=get_progress_bar_string(disk),
+            disk_read=get_readable_file_size(disk_io_counters().read_bytes) + f" ({get_readable_time(disk_io_counters().read_time / 1000)})",
+            disk_write=get_readable_file_size(disk_io_counters().write_bytes) + f" ({get_readable_time(disk_io_counters().write_time / 1000)})",
+            disk_t=get_readable_file_size(total),
+            disk_u=get_readable_file_size(used),
+            disk_f=get_readable_file_size(free),
         )
-        if len(slit) > 1:
-            for rep in range(1, len(slit)):
-                args = slit[rep].split(":")
-                if len(args) == 3:
-                   cap_mono = cap_mono.replace(args[0], args[1], int(args[2]))
-                elif len(args) == 2:
-                    cap_mono = cap_mono.replace(args[0], args[1])
-                elif len(args) == 1:
-                    cap_mono = cap_mono.replace(args[0], '')
-        cap_mono = cap_mono.replace('%%', '|')
-    elif all_edit:
-        cap_mono = file_ if FSTYLE == 'r' else f"<{cfont}>{file_}</{cfont}>"
+    elif key == "stsys":
+        cpuUsage = cpu_percent(interval=0.5)
+        msg = BotTheme('SYS_STATS',
+            os_uptime=get_readable_time(time() - boot_time()),
+            os_version=platform.version(),
+            os_arch=platform.platform(),
+            up_data=get_readable_file_size(net_io_counters().bytes_sent),
+            dl_data=get_readable_file_size(net_io_counters().bytes_recv),
+            pkt_sent=str(net_io_counters().packets_sent)[:-3],
+            pkt_recv=str(net_io_counters().packets_recv)[:-3],
+            tl_data=get_readable_file_size(net_io_counters().bytes_recv + net_io_counters().bytes_sent),
+            cpu=cpuUsage,
+            cpu_bar=get_progress_bar_string(cpuUsage),
+            cpu_freq=f"{cpu_freq(percpu=False).current / 1000:.2f} GHz" if cpu_freq() else "Access Denied",
+            sys_load="%, ".join(str(round((x / cpu_count() * 100), 2)) for x in getloadavg()) + "%, (1m, 5m, 15m)",
+            p_core=cpu_count(logical=False),
+            v_core=cpu_count(logical=True) - cpu_count(logical=False),
+            total_core=cpu_count(logical=True),
+            cpu_use=len(Process().cpu_affinity()),
+        )
+    elif key == "strepo":
+        last_commit, changelog = 'No Data', 'N/A'
+        if await aiopath.exists('.git'):
+            last_commit = (await cmd_exec("git log -1 --pretty='%cd ( %cr )' --date=format-local:'%d/%m/%Y'", True))[0]
+            changelog = (await cmd_exec("git log -1 --pretty=format:'<code>%s</code> <b>By</b> %an'", True))[0]
+        official_v = (await cmd_exec("curl -o latestversion.py https://raw.githubusercontent.com/weebzone/WZML-X/master/bot/version.py -s && python3 latestversion.py && rm latestversion.py", True))[0]
+        msg = BotTheme('REPO_STATS',
+            last_commit=last_commit,
+            bot_version=get_version(),
+            lat_version=official_v,
+            commit_details=changelog,
+            remarks=await compare_versions(get_version(), official_v),
+        )
+    elif key == "botlimits":
+        msg = BotTheme('BOT_LIMITS',
+                DL = ('∞' if (val := config_dict['DIRECT_LIMIT']) == '' else val),
+                TL = ('∞' if (val := config_dict['TORRENT_LIMIT']) == '' else val),
+                GL = ('∞' if (val := config_dict['GDRIVE_LIMIT']) == '' else val),
+                YL = ('∞' if (val := config_dict['YTDLP_LIMIT']) == '' else val),
+                PL = ('∞' if (val := config_dict['PLAYLIST_LIMIT']) == '' else val),
+                CL = ('∞' if (val := config_dict['CLONE_LIMIT']) == '' else val),
+                ML = ('∞' if (val := config_dict['MEGA_LIMIT']) == '' else val),
+                LL = ('∞' if (val := config_dict['LEECH_LIMIT']) == '' else val),
+                TV  = ('Disabled' if (val := config_dict['TOKEN_TIMEOUT']) == '' else get_readable_time(val)),
+                UTI = ('Disabled' if (val := config_dict['USER_TIME_INTERVAL']) == 0 else get_readable_time(val)),
+                UT = ('∞' if (val := config_dict['USER_MAX_TASKS']) == '' else val),
+                BT = ('∞' if (val := config_dict['BOT_MAX_TASKS']) == '' else val),
+        )
+    btns.ibutton('Close', f'wzmlx {user_id} close')
+    return msg, btns.build_menu(2)
 
-    return up_path, file_, cap_mono
 
-def update_user_ldata(id_, key, value):
-    if id_ in user_data:
-        user_data[id_][key] = value
-    else:
-        user_data[id_] = {key: value}
-
-def is_sudo(user_id):
-    if user_id in user_data:
-        return user_data[user_id].get('is_sudo')
-    return False
-
-def getdailytasks(user_id, increase_task=False, upleech=0, upmirror=0, check_mirror=False, check_leech=False):
+async def getdailytasks(user_id, increase_task=False, upleech=0, upmirror=0, check_mirror=False, check_leech=False):
     task, lsize, msize = 0, 0, 0
     if user_id in user_data and user_data[user_id].get('dly_tasks'):
-        userdate = user_data[user_id]['dly_tasks'][0]
+        userdate, task, lsize, msize = user_data[user_id]['dly_tasks']
         nowdate = datetime.today()
         if userdate.year <= nowdate.year and userdate.month <= nowdate.month and userdate.day < nowdate.day:
-            if increase_task: task = 1
-            elif upleech != 0: lsize += upleech #bytes
-            elif upmirror != 0: msize += upmirror #bytes
-            update_user_ldata(user_id, 'dly_tasks', [datetime.today(), task, lsize, msize])
-            if DATABASE_URL:
-                DbManger().update_user_data(user_id)
-            if check_leech: return lsize
-            elif check_mirror: return msize
-            return task
+            task, lsize, msize = 0, 0, 0
+            if increase_task:
+                task = 1
+            elif upleech != 0:
+                lsize += upleech
+            elif upmirror != 0:
+                msize += upmirror
         else:
-            task = user_data[user_id]['dly_tasks'][1]
-            lsize = user_data[user_id]['dly_tasks'][2]
-            msize = user_data[user_id]['dly_tasks'][3]
-            if increase_task: task += 1
-            elif upleech != 0: lsize += upleech
-            elif upmirror != 0: msize += upmirror
-            if increase_task or upleech or upmirror:
-                update_user_ldata(user_id, 'dly_tasks', [datetime.today(), task, lsize, msize])
-                if DATABASE_URL:
-                    DbManger().update_user_data(user_id)
-            if check_leech: return lsize
-            elif check_mirror: return msize
-            return task
+            if increase_task:
+                task += 1
+            elif upleech != 0:
+                lsize += upleech
+            elif upmirror != 0:
+                msize += upmirror
     else:
-        if increase_task: task += 1
-        elif upleech != 0: lsize += upleech
-        elif upmirror != 0: msize += upmirror
-        update_user_ldata(user_id, 'dly_tasks', [datetime.today(), task, lsize, msize])
-        if DATABASE_URL:
-            DbManger().update_user_data(user_id)
-        if check_leech: return lsize
-        elif check_mirror: return msize
-        return task
+        if increase_task:
+            task += 1
+        elif upleech != 0:
+            lsize += upleech
+        elif upmirror != 0:
+            msize += upmirror
+    update_user_ldata(user_id, 'dly_tasks', [
+                      datetime.today(), task, lsize, msize])
+    if DATABASE_URL:
+        await DbManger().update_user_data(user_id)
+    if check_leech:
+        return lsize
+    elif check_mirror:
+        return msize
+    return task
 
-def is_paid(user_id):
-    if config_dict['PAID_SERVICE'] is True:
-        if user_id in user_data and user_data[user_id].get('is_paid'):
-            ex_date = user_data[user_id].get('expiry_date')
-            if ex_date:
-                odate = datetime.strptime(ex_date, '%d-%m-%Y')
-                ndate = datetime.today()
-                if odate.year <= ndate.year and odate.month <= ndate.month and odate.day < ndate.day:
-                    return False
-            return True
-        else: return False
-    else: return False
 
-ONE, TWO, THREE = range(3)
-def pop_up_stats(update, context):
-    query = update.callback_query
-    stats = bot_sys_stats()
-    query.answer(text=stats, show_alert=True)
-def bot_sys_stats():
-    recv = get_readable_file_size(net_io_counters().bytes_recv)
-    sent = get_readable_file_size(net_io_counters().bytes_sent)
-    num_active = 0
-    num_upload = 0
-    num_seeding = 0
-    num_zip = 0
-    num_unzip = 0
-    num_split = 0
-    tasks = len(download_dict)
-    cpu = cpu_percent()
-    mem = virtual_memory().percent
-    disk = disk_usage("/").percent
-    for stats in list(download_dict.values()):
-        if stats.status() == MirrorStatus.STATUS_DOWNLOADING:
-            num_active += 1
-        if stats.status() == MirrorStatus.STATUS_UPLOADING:
-            num_upload += 1
-        if stats.status() == MirrorStatus.STATUS_SEEDING:
-            num_seeding += 1
-        if stats.status() == MirrorStatus.STATUS_ARCHIVING:
-            num_zip += 1
-        if stats.status() == MirrorStatus.STATUS_EXTRACTING:
-            num_unzip += 1
-        if stats.status() == MirrorStatus.STATUS_SPLITTING:
-            num_split += 1
-    return f"""
-Made with ❤️ by {config_dict['CREDIT_NAME']}
+async def fetch_user_tds(user_id, force=False):
+    user_dict = user_data.get(user_id, {})
+    if config_dict['USER_TD_MODE'] and user_dict.get('td_mode', False) or force:
+        return user_dict.get('user_tds', {})
+    return {}
 
-Tasks: {tasks}
 
-CPU: {progress_bar(cpu)} {cpu}%
-RAM: {progress_bar(mem)} {mem}%
-DISK: {progress_bar(disk)} {disk}%
+async def fetch_user_dumps(user_id):
+    user_dict = user_data.get(user_id, {})
+    if (dumps := user_dict.get('ldump', False)):
+        if not isinstance(dumps, dict):
+            update_user_ldata(user_id, 'ldump', {})
+            return {}
+        return dumps
+    return {}
 
-SENT: {sent} | RECV: {recv}
 
-DLs: {num_active} | ULs: {num_upload} | SEEDING: {num_seeding}
-ZIP: {num_zip} | UNZIP: {num_unzip} | SPLIT: {num_split}
-"""
-    return stats
-dispatcher.add_handler(
-    CallbackQueryHandler(pop_up_stats, pattern="^" + str(THREE) + "$")
-)
+async def checking_access(user_id, button=None):
+    if not config_dict['TOKEN_TIMEOUT'] or bool(user_id == OWNER_ID or user_id in user_data and user_data[user_id].get('is_sudo')):
+        return None, button
+    user_data.setdefault(user_id, {})
+    data = user_data[user_id]
+    expire = data.get('time')
+    if config_dict['LOGIN_PASS'] is not None and data.get('token', '') == config_dict['LOGIN_PASS']:
+        return None, button
+    isExpired = (expire is None or expire is not None and (time() - expire) > config_dict['TOKEN_TIMEOUT'])
+    if isExpired:
+        token = data['token'] if expire is None and 'token' in data else str(uuid4())
+        if expire is not None:
+            del data['time']
+        data['token'] = token
+        user_data[user_id].update(data)
+        if button is None:
+            button = ButtonMaker()
+        encrypt_url = b64encode(f"{token}&&{user_id}".encode()).decode()
+        button.ubutton('Generate New Token', short_url(f'https://t.me/{bot_name}?start={encrypt_url}'))
+        return f'<i>Temporary Token has been expired,</i> Kindly generate a New Temp Token to start using bot Again.\n<b>Validity :</b> <code>{get_readable_time(config_dict["TOKEN_TIMEOUT"])}</code>', button
+    return None, button
+
+
+def extra_btns(buttons):
+    if extra_buttons:
+        for btn_name, btn_url in extra_buttons.items():
+            buttons.ubutton(btn_name, btn_url)
+    return buttons
+
+
+async def set_commands(client):
+    if config_dict['SET_COMMANDS']:
+        try:
+            bot_cmds = [
+            BotCommand(BotCommands.MirrorCommand[0], f'or /{BotCommands.MirrorCommand[1]} Mirror [links/media/rclone_path]'),
+            BotCommand(BotCommands.LeechCommand[0], f'or /{BotCommands.LeechCommand[1]} Leech [links/media/rclone_path]'),
+            BotCommand(BotCommands.QbMirrorCommand[0], f'or /{BotCommands.QbMirrorCommand[1]} Mirror magnet/torrent using qBittorrent'),
+            BotCommand(BotCommands.QbLeechCommand[0], f'or /{BotCommands.QbLeechCommand[1]} Leech magnet/torrent using qBittorrent'),
+            BotCommand(BotCommands.YtdlCommand[0], f'or /{BotCommands.YtdlCommand[1]} Mirror yt-dlp supported links via bot'),
+            BotCommand(BotCommands.YtdlLeechCommand[0], f'or /{BotCommands.YtdlLeechCommand[1]} Leech yt-dlp supported links via bot'),
+            BotCommand(BotCommands.CloneCommand[0], f'or /{BotCommands.CloneCommand[1]} Copy file/folder to Drive (GDrive/RClone)'),
+            BotCommand(BotCommands.CountCommand, '[drive_url]: Count file/folder of Google Drive/RClone Drives'),
+            BotCommand(BotCommands.StatusCommand[0], f'or /{BotCommands.StatusCommand[1]} Get Bot All Status Stats Message'),
+            BotCommand(BotCommands.StatsCommand[0], f'or /{BotCommands.StatsCommand[1]} Check Bot & System stats'),
+            BotCommand(BotCommands.BtSelectCommand, 'Select files to download only torrents/magnet qbit/aria2c'),
+            BotCommand(BotCommands.CategorySelect, 'Select Upload Category with UserTD or Bot Categories to upload only GDrive upload'),
+            BotCommand(BotCommands.CancelMirror, 'Cancel a Task of yours!'),
+            BotCommand(BotCommands.CancelAllCommand[0], f'Cancel all Tasks in whole Bots.'),
+            BotCommand(BotCommands.ListCommand, 'Search in Drive(s)'),
+            BotCommand(BotCommands.SearchCommand, 'Search in Torrent via qBit clients!'),
+            BotCommand(BotCommands.HelpCommand, 'Get detailed help about the WZML-X Bot'),
+            BotCommand(BotCommands.UserSetCommand[0], f"or /{BotCommands.UserSetCommand[1]} User's Personal Settings (Open in PM)"),
+            BotCommand(BotCommands.IMDBCommand, 'Search Movies/Series on IMDB.com and fetch details'),
+            BotCommand(BotCommands.AniListCommand, 'Search Animes on AniList.com and fetch details'),
+            BotCommand(BotCommands.MyDramaListCommand, 'Search Dramas on MyDramaList.com and fetch details'),
+            BotCommand(BotCommands.SpeedCommand[0], f'or /{BotCommands.SpeedCommand[1]} Check Server Up & Down Speed & Details'),
+            BotCommand(BotCommands.MediaInfoCommand[0], f'or /{BotCommands.MediaInfoCommand[1]} Generate Mediainfo for Replied Media or DL links'),
+            BotCommand(BotCommands.BotSetCommand[0], f"or /{BotCommands.BotSetCommand[1]} Bot's Personal Settings (Owner or Sudo Only)"),
+            BotCommand(BotCommands.RestartCommand[0], f'or /{BotCommands.RestartCommand[1]} Restart & Update the Bot (Owner or Sudo Only)'),
+            ]
+            if config_dict['SHOW_EXTRA_CMDS']:
+                bot_cmds.insert(1, BotCommand(BotCommands.MirrorCommand[2], f'or /{BotCommands.MirrorCommand[3]} Mirror and UnZip [links/media/rclone_path]'))
+                bot_cmds.insert(1, BotCommand(BotCommands.MirrorCommand[4], f'or /{BotCommands.MirrorCommand[5]} Mirror and Zip [links/media/rclone_path]'))
+                bot_cmds.insert(4, BotCommand(BotCommands.LeechCommand[2], f'or /{BotCommands.LeechCommand[3]} Leech and UnZip [links/media/rclone_path]'))
+                bot_cmds.insert(4, BotCommand(BotCommands.LeechCommand[4], f'or /{BotCommands.LeechCommand[5]} Leech and Zip [links/media/rclone_path]'))
+                bot_cmds.insert(7, BotCommand(BotCommands.QbMirrorCommand[2], f'or /{BotCommands.QbMirrorCommand[3]} Mirror magnet/torrent and UnZip using qBit'))
+                bot_cmds.insert(7, BotCommand(BotCommands.QbMirrorCommand[4], f'or /{BotCommands.QbMirrorCommand[5]} Mirror magnet/torrent and Zip using qBit'))
+                bot_cmds.insert(10, BotCommand(BotCommands.QbLeechCommand[2], f'or /{BotCommands.QbLeechCommand[3]} Leech magnet/torrent and UnZip using qBit'))
+                bot_cmds.insert(10, BotCommand(BotCommands.QbLeechCommand[4], f'or /{BotCommands.QbLeechCommand[5]} Leech magnet/torrent and Zip using qBit'))
+                bot_cmds.insert(13, BotCommand(BotCommands.YtdlCommand[2], f'or /{BotCommands.YtdlCommand[3]} Mirror yt-dlp supported links and Zip via bot'))
+                bot_cmds.insert(13, BotCommand(BotCommands.YtdlLeechCommand[2], f'or /{BotCommands.YtdlLeechCommand[3]} Leech yt-dlp supported links and Zip via bot'))
+            await client.set_bot_commands(bot_cmds)
+            LOGGER.info('Bot Commands have been Set & Updated')
+        except Exception as err:
+            LOGGER.error(err)
+
+
+def is_valid_token(url, token):
+    resp = rget(url=f"{url}getAccountDetails?token={token}&allDetails=true").json()
+    if resp["status"] == "error-wrongToken":
+        raise Exception("Invalid Gofile Token, Get your Gofile token from --> https://gofile.io/myProfile")

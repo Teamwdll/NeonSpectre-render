@@ -1,42 +1,47 @@
+#!/usr/bin/env python3
 from re import findall, IGNORECASE
-from imdb import IMDb
+from imdb import Cinemagoer
 from pycountry import countries as conn
 
-from telegram import Update
-from telegram.ext import CallbackContext, CommandHandler, CallbackQueryHandler
+from hydrogram.handlers import MessageHandler, CallbackQueryHandler
+from hydrogram.filters import command, regex
 from hydrogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from hydrogram.errors.exceptions.bad_request_400 import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
+from hydrogram.errors import MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty
 
+from bot import bot, LOGGER, user_data, config_dict
 from bot.helper.telegram_helper.filters import CustomFilters
+from bot.helper.telegram_helper.bot_commands import BotCommands
 from bot.helper.telegram_helper.message_utils import sendMessage, editMessage
 from bot.helper.ext_utils.bot_utils import get_readable_time
 from bot.helper.telegram_helper.button_build import ButtonMaker
-from bot import app, LOGGER, dispatcher, IMDB_ENABLED, DEF_IMDB_TEMP, user_data, LIST_ITEMS
 
-imdb = IMDb() 
+imdb = Cinemagoer()
 
-def imdb_search(update: Update, context: CallbackContext):
-    if ' ' in update.message.text:
-        k = sendMessage('<code>Searching IMDB ...</code>', context.bot, update.message)
-        title = update.message.text.split(' ', 1)[1]
-        user_id = update.message.from_user.id
+IMDB_GENRE_EMOJI = {"Action": "🚀", "Adult": "🔞", "Adventure": "🌋", "Animation": "🎠", "Biography": "📜", "Comedy": "🪗", "Crime": "🔪", "Documentary": "🎞", "Drama": "🎭", "Family": "👨‍👩‍👧‍👦", "Fantasy": "🫧", "Film Noir": "🎯", "Game Show": "🎮", "History": "🏛", "Horror": "🧟", "Musical": "🎻", "Music": "🎸", "Mystery": "🧳", "News": "📰", "Reality-TV": "🖥", "Romance": "🥰", "Sci-Fi": "🌠", "Short": "📝", "Sport": "⛳", "Talk-Show": "👨‍🍳", "Thriller": "🗡", "War": "⚔", "Western": "🪩"}
+LIST_ITEMS = 4
+
+async def imdb_search(_, message):
+    if ' ' in message.text:
+        k = await sendMessage(message, '<code>Searching IMDB ...</code>')
+        title = message.text.split(' ', 1)[1]
+        user_id = message.from_user.id
         buttons = ButtonMaker()
-        if title.lower().startswith("tt"):
-            movieid = title.replace("tt", "")
+        if title.lower().startswith("https://www.imdb.com/title/tt"):
+            movieid = title.replace("https://www.imdb.com/title/tt", "")
             movie = imdb.get_movie(movieid)
             if not movie:
-                return editMessage("<i>No Results Found</i>", k)
-            buttons.sbutton(f"🎬 {movie.get('title')} ({movie.get('year')})", f"imdb {user_id} movie {movieid}")
+                return await editMessage(k, "<i>No Results Found</i>")
+            buttons.ibutton(f"🎬 {movie.get('title')} ({movie.get('year')})", f"imdb {user_id} movie {movieid}")
         else:
             movies = get_poster(title, bulk=True)
             if not movies:
                 return editMessage("<i>No Results Found</i>, Try Again or Use <b>Title ID</b>", k)
-            for movie in movies:
-                buttons.sbutton(f"🎬 {movie.get('title')} ({movie.get('year')})", f"imdb {user_id} movie {movie.movieID}")
-        buttons.sbutton("🚫 Close 🚫", f"imdb {user_id} close")
-        editMessage('<b><i>Here What I found on IMDb.com</i></b>', k, buttons.build_menu(1))
+            for movie in movies: # Refurbished Soon !!
+                buttons.ibutton(f"🎬 {movie.get('title')} ({movie.get('year')})", f"imdb {user_id} movie {movie.movieID}")
+        buttons.ibutton("🚫 Close 🚫", f"imdb {user_id} close")
+        await editMessage(k, '<b><i>Here What I found on IMDb.com</i></b>', buttons.build_menu(1))
     else:
-        sendMessage('<i>Send Movie / TV Series Name along with /imdb Command</i>', context.bot, update.message)
+        await sendMessage(message, '<i>Send Movie / TV Series Name along with /imdb Command or send IMDB URL</i>')
 
 
 def get_poster(query, bulk=False, id=False, file=None):
@@ -82,8 +87,8 @@ def get_poster(query, bulk=False, id=False, file=None):
         plot = plot[0]
     else:
         plot = movie.get('plot outline')
-    if plot and len(plot) > 800:
-        plot = f"{plot[:800]}..."
+    if plot and len(plot) > 300:
+        plot = f"{plot[:300]}..."
     return {
         'title': movie.get('title'),
         'trailer': movie.get('videos'),
@@ -108,7 +113,7 @@ def get_poster(query, bulk=False, id=False, file=None):
         "distributors": list_to_str(movie.get("distributors")),
         'release_date': date,
         'year': movie.get('year'),
-        'genres': list_to_hash(movie.get("genres")),
+        'genres': list_to_hash(movie.get("genres"), emoji=True),
         'poster': movie.get('full-size cover url'),
         'plot': plot,
         'rating': str(movie.get("rating"))+" / 10",
@@ -128,12 +133,14 @@ def list_to_str(k):
     else:
         return ' '.join(f'{elem},' for elem in k)[:-1]
 
-def list_to_hash(k, flagg=False):
+def list_to_hash(k, flagg=False, emoji=False):
     listing = ""
     if not k:
         return ""
     elif len(k) == 1:
         if not flagg:
+            if emoji:
+                return str(IMDB_GENRE_EMOJI.get(k[0], '')+" #"+k[0].replace(" ", "_").replace("-", "_"))
             return str("#"+k[0].replace(" ", "_").replace("-", "_"))
         try:
             conflag = (conn.get(name=k[0])).flag
@@ -150,8 +157,10 @@ def list_to_hash(k, flagg=False):
                     listing += f'{conflag} '
                 except AttributeError:
                     pass
+            if emoji:
+                listing += f"{IMDB_GENRE_EMOJI.get(elem, '')} "
             listing += f'#{ele}, '
-        return f'{listing[:-2]} ...'
+        return f'{listing[:-2]}'
     else:
         for elem in k:
             ele = elem.replace(" ", "_").replace("-", "_")
@@ -161,15 +170,15 @@ def list_to_hash(k, flagg=False):
             listing += f'#{ele}, '
         return listing[:-2]
 
-def imdb_callback(update, context):
-    query = update.callback_query
+
+async def imdb_callback(_, query):
     message = query.message
     user_id = query.from_user.id
     data = query.data.split()
     if user_id != int(data[1]):
-        query.answer(text="Not Yours!", show_alert=True)
+        await query.answer("Not Yours!", show_alert=True)
     elif data[2] == "movie":
-        query.answer()
+        await query.answer()
         imdb = get_poster(query=data[3], id=True)
         buttons = []
         if imdb['trailer']:
@@ -177,12 +186,12 @@ def imdb_callback(update, context):
                 buttons.append([InlineKeyboardButton("▶️ IMDb Trailer ", url=str(imdb['trailer'][-1]))])
                 imdb['trailer'] = list_to_str(imdb['trailer'])
             else: buttons.append([InlineKeyboardButton("▶️ IMDb Trailer ", url=str(imdb['trailer']))])
-        #buttons.append([InlineKeyboardButton("🚫 Close 🚫", callback_data=f"imdb {user_id} close")])
+        buttons.append([InlineKeyboardButton("🚫 Close 🚫", callback_data=f"imdb {user_id} close")])
         template = ''
-        if int(data[1]) in user_data and user_data[int(data[1])].get('imdb_temp'):
-            template = user_data[int(data[1])].get('imdb_temp')
-        if not template:
-            template = DEF_IMDB_TEMP
+        #if int(data[1]) in user_data and user_data[int(data[1])].get('imdb_temp'):
+        #    template = user_data[int(data[1])].get('imdb_temp')
+        #if not template:
+        template = config_dict['IMDB_TEMPLATE']
         if imdb and template != "":
             cap = template.format(
             title = imdb['title'],
@@ -221,26 +230,18 @@ def imdb_callback(update, context):
             cap = "No Results"
         if imdb.get('poster'):
             try:
-                app.send_photo(chat_id=query.message.reply_to_message.chat_id,  caption=cap, photo=imdb['poster'], reply_to_message_id=query.message.reply_to_message.message_id, reply_markup=InlineKeyboardMarkup(buttons))
+                await bot.send_photo(chat_id=query.message.reply_to_message.chat.id,  caption=cap, photo=imdb['poster'], reply_to_message_id=query.message.reply_to_message.id, reply_markup=InlineKeyboardMarkup(buttons))
             except (MediaEmpty, PhotoInvalidDimensions, WebpageMediaEmpty):
                 poster = imdb.get('poster').replace('.jpg', "._V1_UX360.jpg")
-                app.send_photo(chat_id=query.message.reply_to_message.chat_id,  caption=cap, photo=poster, reply_markup=InlineKeyboardMarkup(buttons))
-            except Exception as e:
-                LOGGER.exception(e)
-                app.send_message(chat_id=query.message.reply_to_message.chat_id, text=cap, reply_markup=InlineKeyboardMarkup(buttons))
+                await sendMessage(message.reply_to_message, cap, InlineKeyboardMarkup(buttons), poster)
         else:
-            app.send_photo(chat_id=query.message.reply_to_message.chat_id,  caption=cap, photo='https://telegra.ph/file/5af8d90a479b0d11df298.jpg', reply_markup=InlineKeyboardMarkup(buttons))
-        message.delete()
+            await sendMessage(message.reply_to_message, cap, InlineKeyboardMarkup(buttons), 'https://telegra.ph/file/5af8d90a479b0d11df298.jpg')
+        await message.delete()
     else:
-        query.answer()
-        query.message.delete()
-        query.message.reply_to_message.delete()
+        await query.answer()
+        await query.message.delete()
+        await query.message.reply_to_message.delete()
 
 
-imdbfilters = CustomFilters.authorized_chat if IMDB_ENABLED else CustomFilters.owner_filter
-IMDB_HANDLER = CommandHandler("imdb", imdb_search,
-                              filters=imdbfilters | CustomFilters.authorized_user)
-imdbCall_handler = CallbackQueryHandler(imdb_callback, pattern="imdb")
-
-dispatcher.add_handler(IMDB_HANDLER)
-dispatcher.add_handler(imdbCall_handler)
+bot.add_handler(MessageHandler(imdb_search, filters=command(BotCommands.IMDBCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+bot.add_handler(CallbackQueryHandler(imdb_callback, filters=regex(r'^imdb')))

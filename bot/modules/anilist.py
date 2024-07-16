@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 from requests import post as rpost
 from markdown import markdown
 from random import choice
@@ -6,13 +7,14 @@ from calendar import month_name
 from pycountry import countries as conn
 from urllib.parse import quote as q
 
-from telegram import ParseMode
-from telegram.ext import CallbackContext, CommandHandler, CallbackQueryHandler
+from bot import bot, LOGGER, config_dict, user_data
 from bot.helper.telegram_helper.filters import CustomFilters
-from bot.helper.telegram_helper.message_utils import sendMessage, sendPhoto, editMessage
+from bot.helper.telegram_helper.bot_commands import BotCommands
+from bot.helper.telegram_helper.message_utils import sendMessage, editMessage
 from bot.helper.telegram_helper.button_build import ButtonMaker
 from bot.helper.ext_utils.bot_utils import get_readable_time
-from bot import LOGGER, dispatcher, IMAGE_URL, ANILIST_ENABLED, DEF_ANI_TEMP, user_data
+from hydrogram.handlers import MessageHandler, CallbackQueryHandler
+from hydrogram.filters import command, regex
 
 GENRES_EMOJI = {"Action": "👊", "Adventure": choice(['🪂', '🧗‍♀']), "Comedy": "🤣", "Drama": " 🎭", "Ecchi": choice(['💋', '🥵']), "Fantasy": choice(['🧞', '🧞‍♂', '🧞‍♀','🌗']), "Hentai": "🔞", "Horror": "☠", "Mahou Shoujo": "☯", "Mecha": "🤖", "Music": "🎸", "Mystery": "🔮", "Psychological": "♟", "Romance": "💞", "Sci-Fi": "🛸", "Slice of Life": choice(['☘','🍁']), "Sports": "⚽️", "Supernatural": "🫧", "Thriller": choice(['🥶', '🔪','🤯'])}
 
@@ -193,13 +195,12 @@ query ($id: Int,$search: String) {
 url = 'https://graphql.anilist.co'
 sptext = ""
 
-def anilist(update, context: CallbackContext, aniid=None, u_id=None):
+async def anilist(_, msg, aniid=None, u_id=None):
     if not aniid:
-        msg = update.message
         user_id = msg.from_user.id
         squery = (msg.text).split(' ', 1)
         if len(squery) == 1:
-            sendMessage("<i>Provide AniList ID / Anime Name / MyAnimeList ID</i>", context.bot, update.message)
+            await sendMessage(msg, "<i>Provide AniList ID / Anime Name / MyAnimeList ID</i>")
             return
         vars = {'search' : squery[1]}
     else:
@@ -256,85 +257,83 @@ def anilist(update, context: CallbackContext, aniid=None, u_id=None):
         coverimg = animeResp['coverImage']['large'] or ''
         title_img = f"https://img.anili.st/media/{siteid}"
         btns = ButtonMaker()
-        btns.buildbutton("AniList Info 🎬", siteurl, 'header')
-        btns.sbutton("Reviews 📑", f"anime {user_id} rev {siteid}")
-        btns.sbutton("Tags 🎯", f"anime {user_id} tags {siteid}")
-        btns.sbutton("Relations 🧬", f"anime {user_id} rel {siteid}")
-        btns.sbutton("Streaming Sites 📊", f"anime {user_id} sts {siteid}")
-        btns.sbutton("Characters 👥️️", f"anime {user_id} cha {siteid}")
+        btns.ubutton("AniList Info 🎬", siteurl, 'header')
+        btns.ibutton("Reviews 📑", f"anime {user_id} rev {siteid}")
+        btns.ibutton("Tags 🎯", f"anime {user_id} tags {siteid}")
+        btns.ibutton("Relations 🧬", f"anime {user_id} rel {siteid}")
+        btns.ibutton("Streaming Sites 📊", f"anime {user_id} sts {siteid}")
+        btns.ibutton("Characters 👥️️", f"anime {user_id} cha {siteid}")
         if trailer:
-            btns.buildbutton("Trailer 🎞", trailer, 'header')
+            btns.ubutton("Trailer 🎞", trailer, 'header')
         aniListTemp = ''
         if user_id in user_data:
             aniListTemp = user_data[user_id].get('ani_temp', '')
         if not aniListTemp:
-            aniListTemp = DEF_ANI_TEMP
+            aniListTemp = config_dict['ANIME_TEMPLATE']
         try:
             template = aniListTemp.format(**locals()).replace('<br>', '')
         except Exception as e:
-            template = DEF_ANI_TEMP
+            template = config_dict['ANIME_TEMPLATE']
             LOGGER.error(f"AniList Error: {e}")
         if aniid:
             return template, btns.build_menu(3)
         else:
-            try: msg.reply_photo(photo = title_img, caption = template, parse_mode=ParseMode.HTML, reply_markup=btns.build_menu(3))
-            except: msg.reply_photo(photo = 'https://te.legra.ph/file/8a5155c0fc61cc2b9728c.jpg', caption = template, parse_mode=ParseMode.HTML, reply_markup=btns.build_menu(3))
+            try: 
+                await sendMessage(msg, template, btns.build_menu(3), photo=title_img)
+            except: 
+                await sendMessage(msg, template, btns.build_menu(3), photo='https://te.legra.ph/file/8a5155c0fc61cc2b9728c.jpg')
   
-def setAnimeButtons(update, context):
-    query = update.callback_query
+  
+async def setAnimeButtons(client, query):
     message = query.message
     user_id = query.from_user.id
     data = query.data
     data = data.split()
     siteid = data[3]
     btns = ButtonMaker()
-    btns.sbutton("⌫ Back", f"anime {data[1]} home {siteid}")
+    btns.ibutton("⌫ Back", f"anime {data[1]} home {siteid}")
     if user_id != int(data[1]):
-        query.answer(text="Not Yours!", show_alert=True)
+        await query.answer(text="Not Yours!", show_alert=True)
         return
-    elif data[2] == "tags":
-        query.answer()
+    await query.answer()
+    if data[2] == "tags":
         aniTag = rpost(url, json={'query': ANIME_GRAPHQL_QUERY, 'variables': {'id' : siteid}}).json()['data'].get('Media', None)
         msg = "<b>Tags :</b>\n\n"
         msg += "\n".join(f"""<a href="https://anilist.co/search/anime?genres={q(x['name'])}">{x['name']}</a> {x['rank']}%""" for x in aniTag['tags'])
     elif data[2] == "sts":
-        query.answer()
         links = rpost(url, json={'query': ANIME_GRAPHQL_QUERY, 'variables': {'id' : siteid}}).json()['data'].get('Media', None)
         msg = "<b>External & Streaming Links :</b>\n\n"
         msg += "\n".join(f"""<a href="{x['url']}">{x['site']}</a>""" for x in links['externalLinks'])
     elif data[2] == "rev":
-        query.answer()
         animeResp = rpost(url, json={'query': ANIME_GRAPHQL_QUERY, 'variables': {'id' : siteid}}).json()['data'].get('Media', None)
         msg = "<b>Reviews :</b>\n\n"
         reList = animeResp['reviews']['nodes']
         msg += "\n\n".join(f"""<a href="{x['siteUrl']}">{x['summary']}</a>\n<b>Score :</b> <code>{x['score']} / 100</code>\n<i>By {x['user']['name']}</i>""" for x in reList[:8])
     elif data[2] == "rel":
-        query.answer()
         animeResp = rpost(url, json={'query': ANIME_GRAPHQL_QUERY, 'variables': {'id' : siteid}}).json()['data'].get('Media', None)
         msg = "<b>Relations :</b>\n\n"
         msg += "\n\n".join(f"""<a href="{x['node']['siteUrl']}">{x['node']['title']['english']}</a> ({x['node']['title']['romaji']})\n<b>Format</b>: <code>{x['node']['format'].capitalize()}</code>\n<b>Status</b>: <code>{x['node']['status'].capitalize()}</code>\n<b>Average Score</b>: <code>{x['node']['averageScore']}%</code>\n<b>Source</b>: <code>{x['node']['source'].capitalize()}</code>\n<b>Relation Type</b>: <code>{x.get('relationType', 'N/A').capitalize()}</code>""" for x in animeResp['relations']['edges'])
     elif data[2] == "cha":
-        query.answer()
         animeResp = rpost(url, json={'query': ANIME_GRAPHQL_QUERY, 'variables': {'id' : siteid}}).json()['data'].get('Media', None)
         msg = "<b>List of Characters :</b>\n\n"
         msg += "\n\n".join(f"""• <a href="{x['node']['siteUrl']}">{x['node']['name']['full']}</a> ({x['node']['name']['native']})\n<b>Role :</b> {x['role'].capitalize()}""" for x in (animeResp['characters']['edges'])[:8])
     elif data[2] == "home":
-        query.answer()
-        msg, btns = anilist(update, context.bot, siteid, data[1])
-        message.edit_caption(caption=msg, parse_mode=ParseMode.HTML, reply_markup=btns)
+        msg, btns = await anilist(client, message, siteid, data[1])
+        await editMessage(message, msg, btns)
         return
-    message.edit_caption(caption=msg, parse_mode=ParseMode.HTML, reply_markup=btns.build_menu(1))
+    await editMessage(message, msg, btns.build_menu(1))
 
-def character(update, context, aniid=None, u_id=None):
+
+async def character(_, message, aniid=None, u_id=None):
     global sptext
     rlp_mk = None
     if not aniid:
-        search = update.message.text.split(' ', 1)
+        search = message.text.split(' ', 1)
         if len(search) == 1:
-            sendMessage('<b>Format :</b>\n<code>/character</code> <i>[search AniList Character]</i>', context.bot, update.message) 
+            await sendMessage(message, '<b>Format :</b>\n<code>/character</code> <i>[search AniList Character]</i>') 
             return
         vars = {'search': search[1]}
-        user_id = update.message.from_user.id 
+        user_id = message.from_user.id
     else:
         vars = {'id': aniid}
         user_id = int(u_id)
@@ -347,7 +346,7 @@ def character(update, context, aniid=None, u_id=None):
         if '~!' in description and '!~' in description: #Spoiler
             btn = ButtonMaker()
             sptext = description.split('~!', 1)[1].rsplit('!~', 1)[0].replace('~!', '').replace('!~', '')
-            btn.sbutton("🔍 View Spoiler", f"cha {user_id} spoil {siteid}")
+            btn.ibutton("🔍 View Spoiler", f"cha {user_id} spoil {siteid}")
             rlp_mk = btn.build_menu(1)
             description = description.split('~!', 1)[0]
         if len(description) > 700:  
@@ -359,36 +358,38 @@ def character(update, context, aniid=None, u_id=None):
         if aniid:
             return msg, rlp_mk
         else:
-            if img: update.effective_message.reply_photo(photo = img, caption = msg, reply_markup=rlp_mk)
-            else: sendMessage(msg, context.bot, update.message)
+            if img: 
+                await sendMessage(message, msg, rlp_mk, img)
+            else: 
+                await sendMessage(message, msg)
 
-def setCharacButtons(update, context):
+
+async def setCharacButtons(client, query):
     global sptext
-    query = update.callback_query
     message = query.message
     user_id = query.from_user.id
     data = query.data
     data = data.split()
     btns = ButtonMaker()
-    btns.sbutton("⌫ Back", f"cha {data[1]} home {data[3]}")
+    btns.ibutton("⌫ Back", f"cha {data[1]} home {data[3]}")
     if user_id != int(data[1]):
-        query.answer(text="Not Yours!", show_alert=True)
+        await query.answer(text="Not Yours!", show_alert=True)
         return
     elif data[2] == "spoil":
-        query.answer("Alert !! Shh")
+        await query.answer("Alert !! Shh")
         if len(sptext) > 900:
             sptext = f"{sptext[:900]}..."
-        message.edit_caption(caption=f"<b>Spoiler Ahead :</b>\n\n<tg-spoiler>{markdown(sptext).replace('<p>', '').replace('</p>', '')}</tg-spoiler>", parse_mode=ParseMode.HTML, reply_markup=btns.build_menu(1))
+        await editMessage(message, f"<b>Spoiler Ahead :</b>\n\n<tg-spoiler>{markdown(sptext).replace('<p>', '').replace('</p>', '')}</tg-spoiler>", btns.build_menu(1))
     elif data[2] == "home":
-        query.answer()
-        msg, btns = character(update, context.bot, data[3], data[1])
-        message.edit_caption(caption=msg, parse_mode=ParseMode.HTML, reply_markup=btns)
+        await query.answer()
+        msg, btns = await character(client, message, data[3], data[1])
+        await editMessage(message, msg, btns)
 
-def manga(update, context):
-    message = update.effective_message
+
+async def manga(_, message):
     search = message.text.split(' ', 1)
     if len(search) == 1:
-        sendMessage('<b>Format :</b>\n<code>/manga</code> <i>[search manga]</i>',  context.bot, update.message) 
+        await sendMessage(message, '<b>Format :</b>\n<code>/manga</code> <i>[search manga]</i>') 
         return
     search = search[1]
     variables = {'search': search}
@@ -409,43 +410,29 @@ def manga(update, context):
         msg = msg[:-2]
         info = json['siteUrl']
         buttons = ButtonMaker()
-        buttons.buildbutton("AniList Info", info)
+        buttons.ubutton("AniList Info", info)
         bimage = json.get("bannerImage", False)
         image = f"https://img.anili.st/media/{json.get('id')}"
         msg += f"\n\n_{json.get('description', None)}_"
         msg = msg.replace('<br>', '').replace('<i>', '').replace('</i>', '')
-        if image:
-            try:
-                update.effective_message.reply_photo(photo = image, caption = msg, parse_mode=ParseMode.MARKDOWN, reply_markup=buttons.build_menu(1))
-            except:
-                msg += f" [〽️]({image})"
-                update.effective_message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=buttons.build_menu(1))
-        else: update.effective_message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=buttons.build_menu(1))
+        try:
+            await sendMessage(message, msg, buttons.build_menu(1), image)
+        except:
+            msg += f" [〽️]({image})"
+            await sendMessage(message, msg, buttons.build_menu(1))
 
-def weebhelp(update, context):
+
+async def anime_help(_, message):
     help_string = '''
 <u><b>🔍 Anime Help Guide</b></u>
 • /anime : <i>[search AniList]</i>
 • /character : <i>[search AniList Character]</i>
-• /manga : <i>[search manga]</i>
-'''
-    sendPhoto(help_string, context.bot, update.message, IMAGE_URL)
+• /manga : <i>[search manga]</i>'''
+    await sendMessage(message, help_string)
 
-anifilters = CustomFilters.authorized_chat if ANILIST_ENABLED else CustomFilters.owner_filter
-ANIME_HANDLER = CommandHandler("anime", anilist,
-                                        filters=anifilters | CustomFilters.authorized_user)
-CHARACTER_HANDLER = CommandHandler("character", character,
-                                        filters=anifilters | CustomFilters.authorized_user)
-MANGA_HANDLER = CommandHandler("manga", manga,
-                                        filters=anifilters | CustomFilters.authorized_user)
-WEEBHELP_HANDLER = CommandHandler("weebhelp", weebhelp,
-                                        filters=anifilters | CustomFilters.authorized_user)
-anibut_handler = CallbackQueryHandler(setAnimeButtons, pattern="anime")
-chabut_handler = CallbackQueryHandler(setCharacButtons, pattern="cha")
-
-dispatcher.add_handler(ANIME_HANDLER)
-dispatcher.add_handler(CHARACTER_HANDLER)
-dispatcher.add_handler(MANGA_HANDLER)
-dispatcher.add_handler(WEEBHELP_HANDLER)
-dispatcher.add_handler(anibut_handler)
-dispatcher.add_handler(chabut_handler)
+bot.add_handler(MessageHandler(anilist, filters=command(BotCommands.AniListCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+bot.add_handler(MessageHandler(character, filters=command("character") & CustomFilters.authorized & ~CustomFilters.blacklisted))
+bot.add_handler(MessageHandler(manga, filters=command("manga") & CustomFilters.authorized & ~CustomFilters.blacklisted))
+bot.add_handler(MessageHandler(anime_help, filters=command(BotCommands.AnimeHelpCommand) & CustomFilters.authorized & ~CustomFilters.blacklisted))
+bot.add_handler(CallbackQueryHandler(setAnimeButtons, filters=regex(r'^anime')))
+bot.add_handler(CallbackQueryHandler(setCharacButtons, filters=regex(r'^cha')))
